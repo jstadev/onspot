@@ -1,7 +1,7 @@
 // The Log: the unsent pins and the sent pins of this host, grouped by batch.
 import { HOST, SUBMIT_KEYS } from './env.js';
 import { resolveTarget } from './target.js';
-import { clip, plural, statusText, when } from './format.js';
+import { clip, plural, revertTag, statusText, when } from './format.js';
 import { button, el, link, panelShell, root, setPressed } from './dom.js';
 import { schedule, syncWatchers } from './layout.js';
 import { api } from './live.js';
@@ -105,7 +105,7 @@ export function renderLog() {
         : pin.status === 'waiting' ? clip(questions.get(pin.id) || 'Open it to answer.', 200)
         : pin.status === 'dismissed' ? clip(pin.summary || '', 160)
         : pin.status === 'working' ? clip(pin.progress?.text, 200) || `Started ${when(pin.startedAt)}` : '';
-      section.append(logRow(String(pin.id), { key: pin.status, text: statusText(pin) }, `#${pin.id}`, pin.note,
+      section.append(logRow(String(pin.id), { key: pin.status, text: revertTag(pin) || statusText(pin) }, `#${pin.id}`, pin.note,
         `${clip(pin.targets[0]?.label, 60)} · ${pin.path}`, detail, () => openPin(pin), `Open pin ${pin.id}`));
     }
     list.append(section);

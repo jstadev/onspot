@@ -262,7 +262,7 @@ for (const existingRun of [false, true]) {
     const file = join(dir, "pins.db");
     const old = createOldDatabase(file);
     if (existingRun) old.exec("ALTER TABLE pins ADD COLUMN run TEXT; UPDATE pins SET run = 'triad:old' WHERE id = 13;");
-    const rows = old.prepare("SELECT * FROM pins ORDER BY id").all().map((row) => ({ ...row, run: row.run ?? null, batch: null, model: null, attempts: 0, intent: null, scope: null, presets: null, shot_before: null, shot_after: null, accepted_at: null, reopens: null }));
+    const rows = old.prepare("SELECT * FROM pins ORDER BY id").all().map((row) => ({ ...row, run: row.run ?? null, batch: null, model: null, attempts: 0, intent: null, scope: null, presets: null, shot_before: null, shot_after: null, accepted_at: null, reopens: null, versions: null, revert: null, reverted_at: null }));
     const replies = old.prepare("SELECT * FROM replies ORDER BY id").all();
     const sequences = old.prepare("SELECT * FROM sqlite_sequence ORDER BY name").all();
     assert.doesNotMatch(old.prepare("SELECT sql FROM sqlite_schema WHERE name = 'pins'").get().sql, /'waiting'/);

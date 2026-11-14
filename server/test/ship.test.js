@@ -175,6 +175,36 @@ test("(a) happy path: commit, gate, merge, staging, check, close and clean up", 
   assert.deepEqual(f.projCalls().map((c) => c.args), [["release", "demo", "staging"]]);
 });
 
+test("(a2) a revert that deletes a file and its folder ships: git revert stages the deletion, ship commits it", async (t) => {
+  const f = await fixture(t);
+  // An earlier pin added a file in a new folder and changed app.txt; it is on main.
+  mkdirSync(join(f.main, "parts"));
+  writeFileSync(join(f.main, "parts/badge.txt"), "badge\n");
+  writeFileSync(join(f.main, "app.txt"), "one\nTWO\nthree\n");
+  await git(f.main, "add", ".");
+  await git(f.main, "commit", "-q", "-m", "Pin #11: badge");
+  const fix = await git(f.main, "rev-parse", "HEAD");
+  await git(f.main, "push", "-q", "origin", "main");
+  await git(f.wt, "fetch", "-q", "origin");
+  await git(f.wt, "reset", "-q", "--hard", "origin/main");
+  await git(f.wt, "revert", "--no-commit", fix);
+  assert.equal(existsSync(join(f.wt, "parts")), false, "the folder is gone with its only file");
+  assert.equal(await f.go({ summary: "Back to the page before pin #11", message: "Revert pin #12: badge", paths: ["app.txt", "parts/badge.txt"] }), 0, f.text());
+  const [pr] = f.prs;
+  assert.equal(pr.title, "Revert pin #12: badge");
+  assert.equal(await f.originFile("app.txt"), "one\ntwo\nthree");
+  assert.notEqual((await run("git", ["-C", f.origin, "cat-file", "-e", "main:parts/badge.txt"])).code, 0, "the file is gone on main");
+  assert.deepEqual(f.resolved().map((p) => p.body), [{ summary: "Back to the page before pin #11", commit: pr.mergeCommit }]);
+});
+
+test("(a3) a path that is in no worktree, no index and no commit stops the commit step with the git error", async (t) => {
+  const f = await fixture(t);
+  f.write("app.txt", "one\nTWO\nthree\n");
+  assert.equal(await f.go({ paths: ["app.txt", "missing.txt"] }), 1);
+  assert.match(f.text(), /ship stopped at commit: git commit exited/);
+  assert.equal(f.prs.length, 0);
+});
+
 test("(b) a failing release.test stops at the gate: nothing pushed, no release, no resolve", async (t) => {
   const f = await fixture(t);
   writeFileSync(f.failFlag, "");

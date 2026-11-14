@@ -26,7 +26,15 @@ const TRANSITIONS = {
   ask: { from: ["queued", "working"], to: "waiting" },
   reopen: { from: ["working", "waiting", "done", "dismissed"], to: "queued" },
   accept: { from: ["done"], to: "done" },
+  revert: { from: ["done", "dismissed"], to: "queued" },
 };
+// Only he can accept a result or go back to an earlier version.
+const USER_ONLY = { accept: "accept a pin", revert: "go back to an earlier version" };
+// A version is one live fix commit; a git sha of 7 to 40 hex characters. The list keeps the newest.
+const COMMIT_RE = /^[0-9a-f]{7,40}$/i;
+const VERSIONS_MAX = 30;
+// The reply that a resolve writes: "Done: <summary> (<commit>)". The first open of a v3.5 file reads the versions from it.
+const DONE_REPLY_RE = /^Done: ([\s\S]*) \(([0-9a-f]{7,40})\)$/i;
 export const BATCH_MAX = 30;
 const KEY_RE = /^[A-Za-z0-9_-]{8,80}$/;
 const ATTR_KEYS = ["id", "class", "role", "aria-label", "href", "src", "alt", "name", "type", "placeholder", "data-testid", "data-slot", "data-component", "title"];
@@ -38,7 +46,7 @@ const SHOT_FILE_RE = new RegExp(`^(${ID})-(?:${SHOT_KINDS.join("|")})(?:\\.tmp)?
 // Columns that newer versions added; an older file gets them on open.
 const ADDED_COLUMNS = [["run", "TEXT"], ["batch", "INTEGER"], ["model", "TEXT"], ["attempts", "INTEGER NOT NULL DEFAULT 0"],
   ["intent", "TEXT"], ["scope", "TEXT"], ["presets", "TEXT"], ["shot_before", "TEXT"], ["shot_after", "TEXT"],
-  ["accepted_at", "TEXT"], ["reopens", "INTEGER"]];
+  ["accepted_at", "TEXT"], ["reopens", "INTEGER"], ["versions", "TEXT"], ["revert", "TEXT"], ["reverted_at", "TEXT"]];
 const BULK_DEFAULT = { on: false, delegate: false, agents: 3 };
 const isFlag = (v) => typeof v === "boolean";
 const BULK_CHECKS = { on: isFlag, delegate: isFlag, agents: (v) => Number.isInteger(v) && v >= 1 && v <= 8 };
@@ -71,6 +79,9 @@ CREATE TABLE IF NOT EXISTS pins (
   shot_after TEXT,
   accepted_at TEXT,
   reopens INTEGER,
+  versions TEXT,
+  revert TEXT,
+  reverted_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   started_at TEXT,
@@ -124,6 +135,7 @@ function migrate(db) {
     try {
       db.exec(PINS_SCHEMA);
       const existing = new Set(db.prepare("PRAGMA table_info(pins)").all().map(({ name }) => name));
+      const backfill = !existing.has("versions");
       for (const [name, type] of ADDED_COLUMNS) {
         if (!existing.has(name)) db.exec(`ALTER TABLE pins ADD COLUMN ${name} ${type};`);
       }
@@ -141,6 +153,7 @@ function migrate(db) {
         }
       }
       db.exec(SCHEMA);
+      if (backfill) backfillVersions(db);
       if (db.prepare("PRAGMA foreign_key_check").all().length) throw new Error("database has invalid foreign keys");
       db.exec("COMMIT;");
     } catch (error) {
@@ -150,6 +163,20 @@ function migrate(db) {
   } finally {
     db.exec("PRAGMA foreign_keys = ON;");
   }
+}
+
+// Before v3.5 a pin kept only its latest commit. Its own "Done: <summary> (<commit>)" replies hold every fix, oldest first.
+function backfillVersions(db) {
+  const found = new Map();
+  for (const { pin_id: id, body, created_at: at } of db.prepare("SELECT pin_id, body, created_at FROM replies WHERE body LIKE 'Done: %' ORDER BY id").all()) {
+    const match = DONE_REPLY_RE.exec(body);
+    if (!match) continue;
+    const list = found.get(id) ?? [];
+    if (!list.some((v) => v.commit === match[2])) list.push({ commit: match[2], summary: clip(match[1].trim(), 300), at });
+    found.set(id, list);
+  }
+  const write = db.prepare("UPDATE pins SET versions = ? WHERE id = ?");
+  for (const [id, list] of found) write.run(JSON.stringify(list.slice(-VERSIONS_MAX)), id);
 }
 
 /** "open" (default), "all", or a comma list of statuses. */
@@ -170,6 +197,12 @@ function clip(v, max) {
   if (typeof v !== "string") return undefined;
   const cut = v.slice(0, max);
   return /[\ud800-\udbff]$/.test(cut) ? cut.slice(0, -1) : cut;
+}
+
+// The reply that a resolve or a dismiss writes. The summary may use all 4000 characters: its text is cut, the commit stays.
+function closing(verb, text, ref) {
+  const tail = ref ? ` (${ref})` : "";
+  return `${verb}: ${clip(text, 4000 - verb.length - 2 - tail.length)}${tail}`;
 }
 
 function required(v, max, name) {
@@ -277,6 +310,9 @@ function toPin(row) {
     shots: { before: row.shot_before ?? null, after: row.shot_after ?? null },
     acceptedAt: row.accepted_at ?? null,
     reopens: row.reopens === null || row.reopens === undefined ? null : Number(row.reopens),
+    versions: row.versions ? JSON.parse(row.versions) : [],
+    revert: row.revert ? JSON.parse(row.revert) : null,
+    revertedAt: row.reverted_at ?? null,
     replyCount: Number(row.reply_count ?? 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -312,7 +348,10 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
     start: db.prepare(`UPDATE pins SET status = 'working', agent = ?, summary = NULL, commit_ref = NULL, run = ?, model = ?, attempts = attempts + 1, shot_before = NULL, shot_after = NULL, started_at = ?, closed_at = NULL, updated_at = ? WHERE id = ?`),
     note: db.prepare(`UPDATE pins SET note = ?, updated_at = ? WHERE id = ?`),
     status: db.prepare(`UPDATE pins SET status = ?, agent = ?, summary = ?, commit_ref = ?, run = ?, started_at = ?, closed_at = ?, updated_at = ? WHERE id = ?`),
-    requeue: db.prepare(`UPDATE pins SET status = 'queued', agent = NULL, summary = NULL, commit_ref = NULL, run = NULL, started_at = NULL, closed_at = NULL, accepted_at = NULL, reopens = reopens + ?, updated_at = ? WHERE id = ?`),
+    requeue: db.prepare(`UPDATE pins SET status = 'queued', agent = NULL, summary = NULL, commit_ref = NULL, run = NULL, started_at = NULL, closed_at = NULL, accepted_at = NULL, reverted_at = NULL, reopens = reopens + ?, updated_at = ? WHERE id = ?`),
+    resolve: db.prepare(`UPDATE pins SET status = 'done', agent = ?, summary = ?, commit_ref = ?, versions = ?, revert = NULL, reverted_at = ?, closed_at = ?, updated_at = ? WHERE id = ?`),
+    revert: db.prepare(`UPDATE pins SET status = 'queued', agent = NULL, summary = NULL, commit_ref = NULL, run = NULL, started_at = NULL, closed_at = NULL, accepted_at = NULL, reverted_at = NULL, revert = ?, reopens = reopens + 1, updated_at = ? WHERE id = ?`),
+    dropRevert: db.prepare(`UPDATE pins SET revert = NULL WHERE id = ?`),
     accept: db.prepare(`UPDATE pins SET accepted_at = ?, updated_at = ? WHERE id = ?`),
     touch: db.prepare(`UPDATE pins SET updated_at = ? WHERE id = ?`),
     del: db.prepare(`DELETE FROM pins WHERE id = ?`),
@@ -467,7 +506,7 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
     transition(id, action, { agent, summary, commit, reason, question, run, model, kind = "agent", author } = {}) {
       const rule = TRANSITIONS[action];
       if (!rule) throw new ValidationError(`unknown action "${action}"`);
-      if (action === "accept" && kind !== "user") throw new ForbiddenError("only a user can accept a pin");
+      if (USER_ONLY[action] && kind !== "user") throw new ForbiddenError(`only a user can ${USER_ONLY[action]}`);
       let reply = null;
       db.exec("BEGIN IMMEDIATE");
       try {
@@ -482,12 +521,19 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
         } else if (action === "resolve") {
           const text = required(summary, 4000, "summary");
           const ref = optional(commit, 200, "commit");
-          q.status.run("done", who, text, ref, pin.run, pin.startedAt, t, t, id);
-          reply = insertReply(id, kind, author ?? who, `Done: ${text}${ref ? ` (${ref})` : ""}`);
+          // A revert run takes its commits out of the live versions; its own commit is no new version.
+          let versions = pin.versions;
+          if (pin.revert) versions = versions.filter((v) => !pin.revert.commits.includes(v.commit));
+          else if (ref && COMMIT_RE.test(ref) && !versions.some((v) => v.commit === ref)) {
+            versions = [...versions, { commit: ref, summary: clip(text, 300), at: t }].slice(-VERSIONS_MAX);
+          }
+          q.resolve.run(who, text, ref, JSON.stringify(versions), pin.revert ? t : null, t, t, id);
+          reply = insertReply(id, kind, author ?? who, closing(pin.revert ? "Reverted" : "Done", text, ref));
         } else if (action === "dismiss") {
           const why = optional(reason, 4000, "reason");
           q.status.run("dismissed", pin.agent, why, null, pin.run, pin.startedAt, t, t, id);
-          if (why) reply = insertReply(id, kind, author ?? who, `Dismissed: ${why}`);
+          q.dropRevert.run(id);
+          if (why) reply = insertReply(id, kind, author ?? who, closing("Dismissed", why));
         } else if (action === "ask") {
           const text = required(question, 4000, "question");
           q.status.run("waiting", pin.agent, pin.summary, pin.commit, pin.run, pin.startedAt, pin.closedAt, t, id);
@@ -496,6 +542,16 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
           // A second accept changes nothing and sends no event.
           if (pin.acceptedAt) { db.exec("COMMIT"); return pin; }
           q.accept.run(t, t, id);
+        } else if (action === "revert") {
+          // commit is the first fix to undo; every later fix goes too, so the page is the version before it.
+          const ref = required(commit, 200, "commit");
+          const index = pin.versions.findIndex((v) => v.commit === ref);
+          if (index < 0) throw new ConflictError(pin.versions.length ? `pin #${id} has no live fix ${ref}` : `pin #${id} has no version to go back to`);
+          const undo = pin.versions.slice(index).reverse().map((v) => v.commit);
+          q.revert.run(JSON.stringify({ commits: undo, at: t, attempts: pin.attempts }), t, id);
+          const short = (sha) => sha.slice(0, 7);
+          const target = index ? `fix ${index} (${short(pin.versions[index - 1].commit)})` : "the version before this pin";
+          reply = insertReply(id, "user", author, `Go back to ${target}: undo ${undo.map(short).join(", ")}.`);
         } else {
           q.requeue.run(kind === "user" ? 1 : 0, t, id);
         }

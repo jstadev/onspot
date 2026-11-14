@@ -126,6 +126,66 @@ export function buildPrompt({ pin, project, choice, replies = [], history = [], 
 }
 
 /**
+ * The prompt of a revert run (docs/protocol.md, Auto-fix runner, item 16): he pressed Go back on a
+ * closed pin. The session undoes the commits of pin.revert, newest first, ships the old version and
+ * closes the pin. A summary is agent text: it goes in fenced, like a reply.
+ * @param {{ pin: object, project: object, choice: { label: string }, replies?: object[],
+ *           brief?: { card: string[], ship: boolean }|null, shot?: boolean, lean?: boolean }} run
+ */
+export function buildRevertPrompt({ pin, project, choice, replies = [], brief = null, shot = false, lean = false }) {
+  const id = pin.id, card = list(brief?.card), ship = brief?.ship === true;
+  const versions = Array.isArray(pin.versions) ? pin.versions : [];
+  const commits = Array.isArray(pin.revert?.commits) ? pin.revert.commits.map(String) : [];
+  const short = (sha) => fenced(sha, 40).slice(0, 7);
+  const kept = versions.length - commits.length;
+  const target = kept > 0 ? `the page after fix ${kept} (${short(versions[kept - 1].commit)})` : "the page before this pin";
+  const worktree = `/srv/work/<repo>-pin${id}`;
+  const summary = '--summary "<what he now sees, one line, English>"';
+  return lines([
+    `You are the OnSpot session for pin #${id} on ${pin.host}. The Chairman pressed "Go back" on this pin: he wants an earlier version of the page back. Undo the commits below, ship the old version and close the pin.`,
+    `Model: ${choice.label}.`,
+    lean && LEAN,
+    "",
+    "Undo these commits, newest first:",
+    ...commits.map((sha) => {
+      const index = versions.findIndex((v) => v.commit === sha), v = versions[index];
+      return `  ${fenced(sha, 40)} · fix ${index + 1}${v ? ` · ${fenced(String(v.at ?? "").slice(0, 10), 10)} · ${fenced(v.summary, 160)}` : ""}`;
+    }),
+    `He goes back to ${target}.${kept > 0 ? ` Fix ${kept} and the fixes before it stay.` : ""}`,
+    "",
+    "His words on the pin, for context (the order now is the go back):",
+    ...words(pin, replies).filter((line) => !/^Earlier runs:/.test(line)),
+    "",
+    ...fence(pin),
+    FENCE_RULE,
+    "",
+    where(pin.host, project),
+    "",
+    ...block(card),
+    "How to work:",
+    `1. ${card.length ? CARD : MEMORY}`,
+    `2. Make your own worktree ${worktree} from origin/main. Other sessions can change the same project at the same time.`,
+    "3. For each commit above, newest first: git revert --no-commit <sha>. If git does not know a commit, fetch origin first; if it is in another repository, work there. If a commit is undone already, skip it. If a later commit changed the same lines, keep the later work and remove only the change of this pin. Build and look at the result before you ship.",
+    `4. Progress: ${PINS} progress ${id} "<step>". Send 2 to 4 steps of at most 120 characters, in English: commits found, undo made, ship.`,
+    shot
+      ? `5. Shots: the harness took the "before" shot (the page with the fix).${ship ? "" : ` Run \`${PINS} snap ${id} after\` ${AFTER}`}`
+      : `5. Shots: run \`${PINS} snap ${id} before\` before the undo and \`${PINS} snap ${id} after\` after the live deploy. ${SHOTS}`,
+    `6. Ask only when a commit cannot be found or the undo would remove other work: ${PINS} ask ${id} "<one short question>".`,
+    ...(ship ? [
+      `7. Ship with one command: ${PINS} ship ${id} --dir ${worktree} --message "Revert pin #${id}: <short what>" ${summary} <every changed file, also deleted ones>`,
+      "   git status --short lists the files. The command commits them, runs the gate one time, pushes, merges the PR, releases to staging, takes the \"after\" shot, checks the element, closes the pin and removes the worktree. Give the call a timeout of 10 minutes. Do not run the tests, git push, gh or proj yourself.",
+      `   If it stops, fix what it names and run the same command again. Exit code 3: a lane is busy, run it again. Exit code 4: the old version is live but the element did not change back; look at the live page, then fix it and ship again, or close with ${PINS} done ${id} ${DONE}.`,
+    ] : [
+      `7. ${SHIP} Then close: ${PINS} done ${id} ${DONE}`,
+    ]),
+    `8. Never dismiss this pin. If the old version is live already, close it with ${PINS} done ${id} ${summary} and no commit.`,
+    "",
+    `Hard end state: when you stop, pin #${id} is not "working". It is done (with the commit of the undo) or waiting (you asked).`,
+    "Report at the end, one line: result, commit, live check.",
+  ]);
+}
+
+/**
  * One prompt for all pins of a bulk run, in id order (Bulk mode, item 5). If it is longer than
  * PROMPT_BYTES, the history of every pin goes first, then the hints; his words and the page data
  * stay whole.

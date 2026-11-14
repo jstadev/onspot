@@ -311,7 +311,10 @@ export async function ship(input, deps) {
 
     // 4. Commit only the listed paths; other staged or changed files stop the ship.
     step = "commit";
-    await git(["add", "--", ...files]);
+    // A deletion that is staged already (git revert, git rm) is in no worktree and no index: git add refuses its path.
+    const indexed = new Set((await git(["ls-files", "-z", "--", ...files])).stdout.split("\0"));
+    const present = files.filter((rel) => indexed.has(rel) || lstatSync(join(root, rel), { throwIfNoEntry: false }));
+    if (present.length) await git(["add", "--", ...present]);
     const staged = (await git(["diff", "--cached", "--quiet", "--", ...files], { check: false })).code === 1;
     if (staged) await git(["commit", "-q", "-m", message, "--", ...files]);
     else if ((await git(["rev-list", "--count", "origin/main..HEAD"])).stdout.trim() === "0") throw failure("nothing to ship");

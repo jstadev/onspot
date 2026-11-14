@@ -52,7 +52,7 @@ export function acceptPin(pin, action = 'updated') {
 function notify(previous, pin) {
   const key = `pin:${pin.id}`;
   // The run toast stays while the run works and shows its newest step. Closed by hand, it stays closed.
-  const working = () => toast({ key, pin: pin.id, kind: 'working', title: `Fixing #${pin.id}${modelName(pin) ? ` · ${modelName(pin)}` : ''}`, text: pin.progress?.text, ms: 0 });
+  const working = () => toast({ key, pin: pin.id, kind: 'working', title: `${pin.revert ? 'Going back' : 'Fixing'} #${pin.id}${modelName(pin) ? ` · ${modelName(pin)}` : ''}`, text: pin.progress?.text, ms: 0 });
   if (previous.status === pin.status) {
     if (pin.status === 'working' && toasts.has(key) && previous.progress?.count !== pin.progress?.count) working();
     return;
@@ -60,7 +60,7 @@ function notify(previous, pin) {
   dropToast(key); // a toast about the old status is stale now
   if (pin.status === 'working') working();
   else if (pin.status === 'done') {
-    toast({ key, pin: pin.id, kind: 'done', title: `#${pin.id} done`, text: pin.summary || pin.note, ms: 16000, actions: [
+    toast({ key, pin: pin.id, kind: 'done', title: pin.revertedAt ? `Back to the earlier version · #${pin.id}` : `#${pin.id} done`, text: pin.summary || pin.note, ms: 16000, actions: [
       ['See the change on the page', 'See it', () => seeIt(pin)], ['Open this pin', 'Open', () => openPin(pin)],
     ] });
   } else if (pin.status === 'dismissed') {

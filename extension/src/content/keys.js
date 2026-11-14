@@ -12,7 +12,7 @@ import { discardButton, discardConfirm, drafts, renderTray, submitAll } from './
 import { closeLog, log, toggleLog } from './log.js';
 import { closeSettings, renderSettings, settings, toggleSettings } from './settings.js';
 import { closeKeyForm } from './settings-keys.js';
-import { card, closeCard } from './card.js';
+import { card, closeCard, setBack } from './card.js';
 
 // What each shortcut action does (the list is in shortcuts.js).
 const actions = {
@@ -38,6 +38,7 @@ export function onKey(event) {
     event.preventDefault(); event.stopPropagation();
     if (!discardConfirm.hidden) { discardConfirm.hidden = true; renderTray(); discardButton.focus({ preventScroll: true }); }
     else if (popup) closePopup();
+    else if (card?.backOpen) setBack(card, false);
     else if (card) closeCard();
     else if (settings?.keyForm) closeKeyForm();
     else if (settings?.reset) { settings.reset = false; renderSettings('key-reset'); }

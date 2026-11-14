@@ -139,7 +139,7 @@ test("API takes each path only with the methods of its route", async () => {
   const api = createAPI({ fetch: async (url, options) => { calls.push(`${options.method} ${url.slice(API.length)}`); return Response.json({}); } });
   const routes = {
     "/api/health": ["GET"], "/api/stats": ["GET"], "/api/batches": ["POST"], "/api/settings": ["GET", "PATCH"], "/api/pins": ["GET", "POST"],
-    "/api/pins/12": ["GET", "PATCH", "DELETE"], "/api/pins/12/replies": ["POST"], "/api/pins/12/accept?x=1": ["POST"], "/api/pins?host=a.koglabs.com": ["GET", "POST"],
+    "/api/pins/12": ["GET", "PATCH", "DELETE"], "/api/pins/12/replies": ["POST"], "/api/pins/12/accept?x=1": ["POST"], "/api/pins/12/revert": ["POST"], "/api/pins?host=a.koglabs.com": ["GET", "POST"],
   };
   const expected = [];
   for (const [path, methods] of Object.entries(routes)) {
@@ -154,9 +154,9 @@ test("API takes each path only with the methods of its route", async () => {
 
 test("the path allowlist holds what the content script calls and nothing that only an agent may call", async () => {
   const allowed = ["/api/health", "/api/pins", "/api/pins?host=a.koglabs.com&status=all&limit=50", "/api/pins/12", "/api/batches",
-    "/api/pins/12/dismiss", "/api/pins/12/reopen", "/api/pins/12/replies", "/api/pins/12/accept", "/api/settings"];
+    "/api/pins/12/dismiss", "/api/pins/12/reopen", "/api/pins/12/replies", "/api/pins/12/accept", "/api/pins/12/revert", "/api/settings"];
   const refused = ["/api/pins/12/shots/before", "/api/pins/12/shots/after", "/api/pins/12/progress", "/api/pins/12/ask", "/api/settings/bulk",
-    "/api/settingsx", "/api/pins/12/accept/1", "/api/pins/0/accept", "/api/events", "/mcp", "/download/onspot-chrome.zip", "/api/pins/12/replies/3", "/api/pins/12?x#y", "/pins/api/health"];
+    "/api/settingsx", "/api/pins/12/accept/1", "/api/pins/0/accept", "/api/pins/12/revert/1", "/api/pins/12/reverts", "/api/events", "/mcp", "/download/onspot-chrome.zip", "/api/pins/12/replies/3", "/api/pins/12?x#y", "/pins/api/health"];
   for (const path of allowed) assert.equal(API_PATH_RE.test(path), true, path);
   let count = 0;
   const api = createAPI({ fetch: () => { count++; throw new Error("must not fetch"); } });

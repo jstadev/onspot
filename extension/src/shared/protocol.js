@@ -14,7 +14,7 @@ export const PORT_NAME = "pins-live";
 export const PING_MS = 25000;
 
 // Paths the background script forwards; anything else is refused. `/api/settings` takes only SETTINGS_METHODS.
-export const API_PATH_RE = /^\/api\/(health|stats|batches|settings|pins(\/[1-9][0-9]{0,11}(\/(start|resolve|dismiss|reopen|replies|accept))?)?)(\?[^#]*)?$/;
+export const API_PATH_RE = /^\/api\/(health|stats|batches|settings|pins(\/[1-9][0-9]{0,11}(\/(start|resolve|dismiss|reopen|replies|accept|revert))?)?)(\?[^#]*)?$/;
 export const API_METHODS = ["GET", "POST", "PATCH", "DELETE"];
 export const SETTINGS_METHODS = ["GET", "PATCH"];
 

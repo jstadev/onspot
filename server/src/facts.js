@@ -106,11 +106,26 @@ const WANTED = {
   layout: { kinds: ["size", "position"], none: "position and size did not change" },
 };
 
+/** The intent that judges a pin: a revert run, or the result of one, wants the element back as it was. */
+export const verdictIntent = (pin) => (pin?.revert || pin?.revertedAt ? "revert" : pin?.intent ?? null);
+
+// A revert passes when the element changed in any way, also when it came back or went away.
+function judgeRevert(before, after) {
+  if (!before || !after) return { ok: null, text: `check: no ${before ? "after" : "before"} facts` };
+  if (!before.found) return after.found ? { ok: true, text: "check: the element is back" } : { ok: null, text: "check: no before facts (a signed-out visitor did not see the element)" };
+  const { kinds, props } = changes(before, after);
+  if (kinds.includes("gone")) return { ok: true, text: "check: the element is gone" };
+  if (!kinds.length) return { ok: false, text: "check: the element did not change back" };
+  if (kinds.length === 1 && kinds[0] === "position") return { ok: null, text: "check: only the position moved" };
+  return { ok: true, text: `check: changed ${kinds.join(", ")}${props.length ? ` (${props.slice(0, 3).join(", ")})` : ""}` };
+}
+
 /**
  * Did the pinned element change the way the pin asks? A pure function.
  * Returns { ok: true | false | null, text }; null means that the facts cannot say.
  */
 export function judge(intent, before, after) {
+  if (intent === "revert") return judgeRevert(before, after);
   if (!before?.found) return { ok: null, text: "check: no before facts (a signed-out visitor did not see the element)" };
   if (!after) return { ok: null, text: "check: no after facts" };
   const { kinds, props } = changes(before, after);
