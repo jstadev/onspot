@@ -4,7 +4,7 @@
 // It is a harness: it never edits code, writes git state or deploys.
 import { readEvents } from "./sse.js";
 import { chooseModel, chooseBulkModel } from "./model.js";
-import { buildBulkPrompt, pinTitle, PROMPT_BYTES } from "./prompt.js";
+import { buildBulkPrompt, buildRevertPrompt, pinTitle, PROMPT_BYTES } from "./prompt.js";
 import { chooseProfile } from "./profile.js";
 import { readConfig } from "./config.js";
 import { createShots } from "./shots.js";
@@ -38,6 +38,9 @@ const errorCode = (error) => Number.isInteger(error.status) ? `http=${error.stat
 // than when the run took the pin says that he did it. A reopen by an agent (a session on its own
 // pin) leaves the count as it is, and so does a pin from before the count (null).
 const sentBack = (pin, taken) => Number.isInteger(pin.reopens) && Number.isInteger(taken) && pin.reopens > taken;
+// The runs of a go back count from his request (docs/protocol.md, item 16): the first revert run
+// has effort high and one retry, also when the pin had fix runs before.
+const runsOf = (pin) => (pin.revert ? { ...pin, attempts: Math.max(0, Number(pin.attempts) - (Number(pin.revert.attempts) || 0)) } : pin);
 
 /** clock supplies now(), setTimeout(fn, ms), clearTimeout(id). start/stop are async.
  *  brief({ pin, project, earlier }) builds the pin brief; shoot(pinId) takes the "before" shot.
@@ -70,6 +73,8 @@ export function createRunner({ fetch, clock, triad, resolveProject, buildPrompt,
   const endedRuns = new Set();
   let enabled = false, started = false, stopping = false, bootstrapped = false, queue = Promise.resolve();
   let bulk = { on: false, delegate: false, agents: 3 };
+  // A pin of a batch waits for the bulk run of its batch while bulk mode is on. A go back never does.
+  const inBulk = (pin) => bulk.on && Boolean(pin.batch) && !pin.revert;
   let budget = { day: null, used: 0 };
   let startAfter = 0, owedAfter = 0;
   let streamController, streamJob, retry = 3000;
@@ -223,7 +228,8 @@ export function createRunner({ fetch, clock, triad, resolveProject, buildPrompt,
   // search; it never stops the run. The log line holds numbers only.
   async function briefOf(pin, project) {
     if (!makeBrief) return null;
-    const earlier = await read(pin, { host: pin.host, status: "done", limit: 200 }, () => true);
+    // A revert run uses the project card only: the earlier pins teach no source hint it needs.
+    const earlier = pin.revert ? [] : await read(pin, { host: pin.host, status: "done", limit: 200 }, () => true);
     let timeout;
     try {
       const facts = await Promise.race([
@@ -258,9 +264,17 @@ export function createRunner({ fetch, clock, triad, resolveProject, buildPrompt,
     if (!current || stopping || limit(current.key)) return;
     await settings();
     // The mode counts at the start: with bulk now on, the pin waits for the run of its batch.
-    if (!enabled || options.disabled || stopping || (bulk.on && current.pin.batch)) return;
+    if (!enabled || options.disabled || stopping || inBulk(current.pin)) return;
     const { pin, project, key } = current;
-    const choice = chooseModel(pin);
+    const choice = chooseModel(runsOf(pin));
+    if (pin.revert) {
+      // A go back (item 16): the lean start, the project card, no history and no siblings.
+      const profile = options.lean ? "pin" : null;
+      const facts = await briefOf(pin, project);
+      const prompt = buildRevertPrompt({ pin, project, choice, replies, brief: facts, shot: Boolean(shots), lean: profile === "pin" });
+      await begin([pin], key, project, choice, `Pin #${pin.id} · Go back: ${pinTitle(pin)} · ${choice.label}`, prompt, profile);
+      return;
+    }
     // The lean start, unless the pin needs the full one (runner/src/profile.js).
     const profile = options.lean ? chooseProfile(pin) : null;
     const known = await context(pin);
@@ -276,7 +290,7 @@ export function createRunner({ fetch, clock, triad, resolveProject, buildPrompt,
     const { pins: listed } = await api(`/api/pins?${new URLSearchParams({ batch, status: "queued", limit: 500 })}`);
     if (!Array.isArray(listed)) throw new Error("Invalid pins list");
     for (const pin of listed) await ingest(pin);
-    const members = () => [...pending.values()].filter((other) => other.pin.batch === batch).sort((a, b) => a.pin.id - b.pin.id);
+    const members = () => [...pending.values()].filter((other) => other.pin.batch === batch && !other.pin.revert).sort((a, b) => a.pin.id - b.pin.id);
     const replies = new Map();
     for (const { pin } of members()) replies.set(pin.id, await reread(pin.id));
     const group = members().slice(0, BULK_MAX);
@@ -498,10 +512,10 @@ export function createRunner({ fetch, clock, triad, resolveProject, buildPrompt,
     // session reopened it) gets the question: a new run for it could repeat without end.
     if (!back && !(pin.status === "working" && pin.run === `triad:${run.id}`)) return;
     try {
-      if (run.end !== GONE && enabled && !options.disabled && pin.status === "working" && Number(pin.attempts) < MAX_ATTEMPTS) {
+      if (run.end !== GONE && enabled && !options.disabled && pin.status === "working" && Number(runsOf(pin).attempts) < MAX_ATTEMPTS) {
         // One more run, one effort step higher. It starts at once. With auto-fix off nothing
         // would pick it up, so the pin goes to the Chairman instead.
-        const next = bulk.on && pin.batch ? chooseBulkModel([pin]) : chooseModel(pin);
+        const next = inBulk(pin) ? chooseBulkModel([pin]) : chooseModel(runsOf(pin));
         await api(`/api/pins/${id}/replies`, { body: `${ended} Trying again at effort ${next.effort}.` });
         await api(`/api/pins/${id}/reopen`, {});
       } else await api(`/api/pins/${id}/ask`, { question: `${ended} Reply to retry, or dismiss it.` });
@@ -519,7 +533,7 @@ export function createRunner({ fetch, clock, triad, resolveProject, buildPrompt,
     for (const entry of units()) {
       if (stopping) return;
       const reason = limit(entry.key);
-      if (!reason) await (bulk.on && entry.pin.batch ? launchBulk(entry) : launch(entry));
+      if (!reason) await (inBulk(entry.pin) ? launchBulk(entry) : launch(entry));
       else if (entry.limit !== reason) {
         entry.limit = reason;
         log(`limit reached ${reason} pin=${entry.pin.id}`);
@@ -533,7 +547,7 @@ export function createRunner({ fetch, clock, triad, resolveProject, buildPrompt,
   function units() {
     const batches = new Set();
     return [...pending.values()].sort((a, b) => a.pin.id - b.pin.id).filter(({ pin }) => {
-      if (!bulk.on || !pin.batch) return true;
+      if (!inBulk(pin)) return true;
       if (batches.has(pin.batch)) return false;
       batches.add(pin.batch);
       return true;

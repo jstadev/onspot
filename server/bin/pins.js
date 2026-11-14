@@ -2,7 +2,7 @@
 import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { clearFacts, judge, loadFacts, saveFacts } from "../src/facts.js";
+import { clearFacts, judge, loadFacts, saveFacts, verdictIntent } from "../src/facts.js";
 import { formatDetail, formatLine, formatList } from "../src/format.js";
 import { ID_RE } from "../src/id.js";
 import { ship } from "../src/ship.js";
@@ -125,7 +125,7 @@ function saveImage(id, bytes) {
 // A done pin whose before and after facts show no change gets a warning. It never blocks the command.
 function warnIfUnchanged(id, pin) {
   const [before, after] = ["before", "after"].map((kind) => loadFacts(id, kind));
-  const result = before && after && judge(pin.intent, before, after);
+  const result = before && after && judge(verdictIntent(pin), before, after);
   if (result?.ok === false) console.error(`warning: ${result.text}`);
 }
 
@@ -217,7 +217,7 @@ async function main() {
       const shot = await snapPin(pin, {});
       await upload(id, "after", shot.bytes);
       saveFacts(id, "after", shot.facts);
-      const verdict = judge(pin.intent, loadFacts(id, "before"), shot.facts);
+      const verdict = judge(verdictIntent(pin), loadFacts(id, "before"), shot.facts);
       return { ok: verdict.ok, text: `#${id} after: ${shot.text} · ${verdict.text}` };
     };
     process.exitCode = await ship(
@@ -236,7 +236,7 @@ async function main() {
     saveFacts(id, kind, shot.facts);
     if (kind === "before") clearFacts(id, ["after", "check"]);
     console.log(`#${id} ${kind}: ${shot.text}${image}`);
-    if (kind !== "before") console.log(`#${id} ${judge(pin.intent, loadFacts(id, "before"), shot.facts).text}`);
+    if (kind !== "before") console.log(`#${id} ${judge(verdictIntent(pin), loadFacts(id, "before"), shot.facts).text}`);
     return;
   }
   if (command === "list") {

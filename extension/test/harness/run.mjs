@@ -1160,6 +1160,130 @@ try {
       await clean(hp, shotsPage.issues); await hp.close();
       pass('a failed accept shows the reason, keeps Looks good for a retry and still marks the pin seen');
 
+      // Go back (0.6.0): the version choice in the card of a closed pin, and the labels of a go back.
+      const backPage = await freshPage(context, '/back'); activePage = backPage.page;
+      const gp = backPage.page;
+      const V = ['a1b2c3d4e5f60718', 'b2c3d4e5f6071829', 'c3d4e5f60718293a'];
+      await gp.evaluate(V => {
+        __fake.reset(); localStorage.removeItem('onspot-harness-storage');
+        const target = { selector: '#target', label: 'h1 "Make room"', rect: { x: 100, y: 100, w: 500, h: 50 } };
+        const at = new Date().toISOString(), v = (i, summary) => ({ commit: V[i], summary, at }), first = v(0, 'Title margin 48px to 24px');
+        for (const [note, fields] of [
+          ['No fix commit.', { status: 'done', summary: 'Nothing to ship.', closedAt: at }],
+          ['One fix.', { status: 'done', summary: first.summary, commit: V[0], versions: [first], closedAt: at }],
+          ['Three fixes.', { status: 'done', summary: 'Title font 600', commit: V[2], versions: [first, v(1, 'Title colour green'), v(2, 'Title font 600')], closedAt: at }],
+          ['Dismissed after a fix.', { status: 'dismissed', summary: 'Not needed.', versions: [first], closedAt: at }],
+          ['Go back, please.', { status: 'queued', versions: [first], revert: { commits: [V[0]], at, attempts: 1 } }],
+          ['Went back.', { status: 'done', summary: 'Undid a1b2c3d.', commit: 'd4e5f60', revertedAt: at, closedAt: at }],
+        ]) __fake.update(__fake.seed({ url: `${location.origin}/back`, note, targets: [target] }).id, { agent: 'claude', model: 'opus 5.5 high', attempts: 1, ...fields });
+      }, V);
+      await gp.reload(); await visible(gp, '.capsule'); await marker(gp, 5);
+      const openBy = async id => {
+        await gp.evaluate(id => { location.hash = `#kog-pin=${id}`; }, id);
+        await waitFor(gp, id => location.hash === '' && document.querySelector('on-spot').shadowRoot.querySelector('.thread .panel-title')?.textContent === `Pin ${id}`, id);
+      };
+      const backView = () => gp.evaluate(() => {
+        const card = document.querySelector('on-spot').shadowRoot.querySelector('.thread');
+        const shown = sel => { const node = card.querySelector(sel); return node && !node.closest('[hidden]') ? node : null; };
+        const box = shown('.go-back');
+        return { button: Boolean(shown('button[title="Go back to an earlier version of this element"]')), tag: shown('.revert-tag')?.textContent ?? null, edit: Boolean(shown('button[title="Edit this note"]')),
+          panel: box && { now: box.querySelector('.detail')?.textContent ?? null, ask: box.querySelector('legend, p:not(.detail)').textContent, options: [...box.querySelectorAll('label')].map(node => [node.textContent, node.querySelector('input').checked]) } };
+      });
+      const activeIn = () => gp.evaluate(() => { const node = document.querySelector('on-spot').shadowRoot.activeElement; return node ? node.title || `${node.type}:${node.value}:${node.checked}` : ''; });
+      const opener = gp.locator(ui('button[title="Go back to an earlier version of this element"]')), submitBack = gp.locator(ui('button[title="Start a run that ships the chosen version"]'));
+      const revertCalls = id => gp.evaluate(id => __fake.calls.filter(call => call.path === `/api/pins/${id}/revert`).map(({ method, body }) => [method, body]), id);
+      const none = { button: false, tag: null, edit: false, panel: null };
+      for (const [id, expected] of [[1, none], [2, { ...none, button: true }], [4, { ...none, button: true }], [5, { ...none, tag: 'Going back' }], [6, { ...none, tag: 'Reverted' }]]) {
+        await openBy(id); assert.deepEqual(await backView(), expected, `pin ${id}`);
+      }
+      assert.equal(await shadowText(gp, '.thread .status'), 'Done');
+      await openBy(5);
+      assert.equal(await shadowText(gp, '.thread .status'), 'Queued again');
+      assert.equal(await gp.locator(ui('button[title="Dismiss this pin"]')).isVisible(), true, 'Dismiss cancels the go back');
+      await gp.evaluate(() => __fake.update(5, { revert: null }));
+      await waitFor(gp, () => !document.querySelector('on-spot').shadowRoot.querySelector('.thread button[title="Edit this note"]').hidden);
+      assert.deepEqual(await backView(), { ...none, edit: true }, 'without the go back the queued card has Edit again');
+      await gp.evaluate(V => __fake.update(5, { revert: { commits: [V[0]], at: new Date().toISOString(), attempts: 1 } }), V);
+      await waitFor(gp, () => document.querySelector('on-spot').shadowRoot.querySelector('.thread button[title="Edit this note"]').hidden);
+      pass('Go back shows only on a done or dismissed card with a version and no go back; "Going back" hides Edit; a done card after a go back says "Reverted"');
+
+      await openBy(2); await opener.click();
+      assert.deepEqual(await backView(), { ...none, panel: { now: null, ask: 'Go back to the page before this pin? An agent undoes a1b2c3d and ships the old version.', options: [] } });
+      assert.equal(await activeIn(), 'Start a run that ships the chosen version');
+      await screenshot(gp, name, 'go-back-one');
+      await gp.locator(ui('button[title="Keep the version that is live now"]')).click();
+      assert.deepEqual(await backView(), { ...none, button: true }); assert.equal(await activeIn(), 'Go back to an earlier version of this element');
+      await opener.click(); await gp.keyboard.press('Escape');
+      assert.deepEqual(await backView(), { ...none, button: true }, 'Esc closes the panel'); assert.equal(await gp.locator(ui('.thread')).isVisible(), true, 'and keeps the card');
+      const reply = gp.locator(ui('textarea[name="pin-reply"]')), confirmDelete = gp.locator(ui('button[title="Confirm deletion of this pin"]'));
+      await opener.click(); await gp.locator(ui('button[title="Send this pin back for another fix"]')).click();
+      assert.deepEqual([(await backView()).panel, await reply.isVisible()], [null, true], 'Not right closes the panel');
+      await opener.click();
+      assert.deepEqual([Boolean((await backView()).panel), await reply.isVisible()], [true, false], 'Go back closes the Not right box');
+      await gp.locator(ui('button[title="Delete this pin"]')).click();
+      assert.deepEqual([(await backView()).panel, await confirmDelete.isVisible()], [null, true], 'the Delete confirm closes the panel');
+      await opener.click();
+      assert.deepEqual([Boolean((await backView()).panel), await confirmDelete.isVisible()], [true, false], 'Go back closes the Delete confirm');
+      assert.deepEqual(await revertCalls(2), [], 'nothing is sent before Go back');
+      pass('Go back with one version: one question names the fix; Keep and Esc close the panel, not the card; it, the Not right box and the Delete confirm close each other');
+
+      await gp.evaluate(() => { __fake.delay = 300; });
+      await submitBack.click();
+      assert.equal(await submitBack.isDisabled(), true, 'Go back is disabled while the call runs');
+      await waitFor(gp, () => document.querySelector('on-spot').shadowRoot.querySelector('.thread .status')?.textContent === 'Queued again');
+      await gp.evaluate(() => { __fake.delay = 30; });
+      assert.deepEqual(await revertCalls(2), [['POST', { commit: V[0] }]]);
+      assert.deepEqual(await backView(), { ...none, tag: 'Going back' });
+      assert.deepEqual(await gp.evaluate(() => { const pin = __fake.db.pins.find(item => item.id === 2); return [pin.status, pin.revert.commits]; }), ['queued', [V[0]]]);
+      await marker(gp, 2, 'queued');
+      pass('"Before this pin" sends POST /api/pins/2/revert { commit: versions[0] }; Go back is disabled while it runs; the card shows the queued pin with "Going back"');
+
+      await openBy(3); await opener.click();
+      assert.deepEqual((await backView()).panel, { now: 'Now: fix 3 · c3d4e5f · Title font 600', ask: 'Go back to which version?', options: [
+        ['After fix 2 · b2c3d4e · Title colour green', false], ['After fix 1 · a1b2c3d · Title margin 48px to 24px', false], ['Before this pin (the page before any fix)', true]] });
+      assert.equal(await activeIn(), `radio:${V[0]}:true`, 'the focus is on the default choice');
+      for (const label of ['After fix 2 · b2c3d4e · Title colour green', 'After fix 1 · a1b2c3d · Title margin 48px to 24px', 'Before this pin (the page before any fix)']) {
+        assert.equal(await gp.getByRole('radio', { name: label, exact: true }).count(), 1, `a screen reader reads "${label}"`);
+      }
+      await gp.keyboard.press('ArrowUp');
+      assert.equal(await activeIn(), `radio:${V[1]}:true`, 'an arrow key picks the next newer version');
+      assert.deepEqual((await backView()).panel.options.map(([, checked]) => checked), [false, true, false]);
+      await gp.keyboard.press('Tab'); await gp.keyboard.press('Tab');
+      assert.equal(await activeIn(), 'Start a run that ships the chosen version', 'Tab goes on to Keep, then Go back');
+      await screenshot(gp, name, 'go-back-three');
+      pass('Go back with three versions: the "Now:" line, the choices newest first, "Before this pin" as the default; each radio has its name and the keys reach it');
+
+      await gp.evaluate(() => __fake.failNext('POST', '/api/pins/3/revert', 409, 'That commit is not a version of this pin.'));
+      await submitBack.click();
+      await waitFor(gp, () => document.querySelector('on-spot').shadowRoot.querySelector('#onspot-card-error')?.textContent === 'That commit is not a version of this pin.');
+      assert.equal(await shadowText(gp, '.thread .status'), 'Done');
+      assert.deepEqual((await backView()).panel?.options.map(([, checked]) => checked), [false, true, false], 'the panel stays open with the choice');
+      assert.equal(await submitBack.isDisabled(), false, 'Go back can be tried again');
+      await submitBack.click();
+      await waitFor(gp, () => document.querySelector('on-spot').shadowRoot.querySelector('.thread .status')?.textContent === 'Queued again');
+      assert.deepEqual(await revertCalls(3), [['POST', { commit: V[1] }], ['POST', { commit: V[1] }]], '"After fix 1" undoes versions[1] and every later fix');
+      assert.deepEqual(await backView(), { ...none, tag: 'Going back' });
+      assert.equal(await gp.locator(ui('#onspot-card-error')).isVisible(), false);
+      assert.deepEqual(await gp.evaluate(() => __fake.db.pins.find(item => item.id === 3).revert.commits), [V[2], V[1]]);
+      await gp.keyboard.press('Escape'); await gone(gp, '.thread');
+      pass('a failed go back shows the reason in the card and keeps the panel open; "After fix 1" sends POST /api/pins/3/revert { commit: versions[1] }');
+
+      const toastTitle = kind => gp.evaluate(kind => document.querySelector('on-spot').shadowRoot.querySelector(`.toast[data-kind="${kind}"] .toast-title`)?.textContent ?? null, kind);
+      await gp.evaluate(() => __fake.update(5, { status: 'working', run: 'triad:77', startedAt: new Date().toISOString() }));
+      await waitFor(gp, () => document.querySelector('on-spot').shadowRoot.querySelector('.toast[data-kind="working"]'));
+      assert.equal(await toastTitle('working'), 'Going back #5 · Opus 5.5 high');
+      await gp.evaluate(() => { const at = new Date().toISOString(); __fake.update(5, { status: 'done', summary: 'Undid a1b2c3d.', commit: 'e5f6071', revert: null, revertedAt: at, versions: [], closedAt: at }); });
+      await waitFor(gp, () => document.querySelector('on-spot').shadowRoot.querySelector('.toast[data-kind="done"]'));
+      assert.equal(await toastTitle('done'), 'Back to the earlier version · #5');
+      await openMenu(gp); await gp.locator(ui('.log-button')).click(); await visible(gp, '.log');
+      await waitFor(gp, () => document.querySelector('on-spot').shadowRoot.querySelectorAll('.log .log-row').length === 6);
+      assert.deepEqual(await gp.evaluate(() => [...document.querySelector('on-spot').shadowRoot.querySelectorAll('.log-row')].map(row => `${row.dataset.key} ${row.querySelector('.chip').textContent}`)),
+        ['6 Reverted', '5 Reverted', '4 Dismissed', '3 Going back', '2 Going back', '1 Done']);
+      await screenshot(gp, name, 'go-back-log');
+      await gp.keyboard.press('Escape'); await gone(gp, '.log');
+      await clean(gp, backPage.issues); await gp.close();
+      pass('a revert run toast says "Going back #5 · Opus 5.5 high" and its done toast "Back to the earlier version · #5"; the Log chips say "Going back" and "Reverted"');
+
       // Bulk mode: server settings in the Settings sheet, and a chip in the tray.
       const bulkPage = await freshPage(context, '/bulk'); activePage = bulkPage.page;
       const bp = bulkPage.page;

@@ -1,4 +1,4 @@
-# OnSpot: contract v3.4
+# OnSpot: contract v3.5
 
 OnSpot puts feedback pins on any `koglabs.com` page. A pin names an element and holds a
 note. Agents read the queue, take a pin, fix it, and resolve it with the commit. This file is
@@ -36,6 +36,13 @@ the page element `<on-spot>`, the downloads `onspot-chrome.zip` and `onspot-fire
 The storage keys `kog-pins:*`, the deep link `#kog-pin=<id>` and both extension ids stay, so an
 installed extension keeps its data and old links still work. A pin that names Fable or Haiku runs
 its session on that model. The e2e SSO cookie code is not in the repository (`E2E_LOGIN`).
+
+v3.5 (2026-11-14, order of the Chairman: *"add a reverse button to the previous version on each pin. make it
+full solid. ill click the pin and ill choose to go back to the previous version i had on that pin"*): each
+pin keeps the list of its live fix commits (`versions`). **Go back** on a closed pin with a live fix queues a
+revert run (`POST /api/pins/:id/revert { commit }`, users only). He chooses the version: before the pin, or
+after an earlier fix. The runner starts one session that undoes the chosen commits, newest first, ships the
+old version and closes the pin. Extension 0.6.0 has the Go back button and the version choice in the card.
 
 2026-11-12 (order of the Chairman, on the model limit of Triad: *"remove it now from everywhere"*):
 Triad accepts every model name (triad #46), so a pin that names Fable or Haiku runs its session on
@@ -88,6 +95,9 @@ The extension has one dev dependency, `esbuild`. Do not add dependencies.
   "shots": { "before": "2026-10-17T14:01:10.000Z", "after": null },
   "acceptedAt": null,
   "reopens": 0,
+  "versions": [{ "commit": "a1b2c3d4e5f6", "summary": "Title margin 48px to 24px", "at": "2026-10-17T14:05:00.000Z" }],
+  "revert": null,
+  "revertedAt": null,
   "replyCount": 0,
   "createdAt": "2026-10-17T14:00:00.000Z",
   "updatedAt": "2026-10-17T14:00:00.000Z",
@@ -123,6 +133,20 @@ The extension has one dev dependency, `esbuild`. Do not add dependencies.
 - `reopens` counts how many times **he** sent the pin back: a user reply with `reopen: true`, a
   user reply on a `waiting` pin, or `reopen` by a user. A reopen by an agent (the runner's retry)
   does not count. Pins created before the v3.1 schema hold `null` (unknown); new pins start at 0.
+- `versions` (v3.5) holds the live fix commits of this pin, oldest first: `{ commit, summary, at }`
+  (`at` is the time of the resolve; `summary` clipped to 300 characters). Each `resolve` with a `commit` of
+  7 to 40 hex characters (a git sha) adds one entry, except the resolve of a revert run and a commit that
+  is in the list already. Another `commit` (a PR link, "n/a") is kept on the pin but is no version. A completed revert removes the entries that it undid. The list keeps the newest 30.
+  Version 0 is the page before the pin; version k is the page after `versions[k-1]`; the last entry is
+  the version that is live now. A pin with no entry has nothing to go back to. On the first open of a
+  v3.5 store, each pin gets its entries from its own `Done: <summary> (<commit>)` replies (the commit is
+  7 to 40 hex characters), oldest first.
+- `revert` (v3.5) is the go back that he asked for and that is not complete, else `null`:
+  `{ commits: ["<sha>", ...], at, attempts }`. `commits` holds the commits to undo, newest first (always
+  the newest entries of `versions`). `at` is the time of the request. `attempts` is the `attempts` of the
+  pin at the request, so `attempts` minus this value is the number of revert runs.
+- `revertedAt` (v3.5) is the time when the latest revert run closed the pin, else `null`. A requeue
+  clears it, so a `done` pin with `revertedAt` shows the result of a go back.
 - `url` has no fragment. `host` is `URL.host` in lower case. `path` is `URL.pathname`.
 - `targets` holds 1 to 10 elements. The first one is the primary element.
 - `quote` is the text the user selected on the page, or `null`.
@@ -185,6 +209,16 @@ They belong to the current run: `start` deletes the steps of the earlier run.
 | ask | queued, working | waiting | adds reply `<question>` (kind of the actor); keeps `agent` and `run` |
 | reopen | working, waiting, done, dismissed | queued | clears `agent`, `summary`, `commit`, `run`, `startedAt`, `closedAt`, `acceptedAt`; `reopens` + 1 when the actor is a user (and `reopens` is not `null`) |
 | accept | done | done | users only (an agent gets 403); sets `acceptedAt` once; a second accept returns 200 and changes nothing; emits `pin` `updated` |
+| revert | done, dismissed | queued | users only (an agent gets 403); `commit` (required, 400 when missing) must be the `commit` of an entry of `versions` (else 409; 409 also when `versions` is empty); sets `revert` to that entry and every later entry, newest first; same clearing as reopen, also `revertedAt`; `reopens` + 1; adds the user reply `Go back to <target>: undo <short shas>.` (`<target>` is `the version before this pin` or `fix <k> (<short sha>)`) |
+
+`resolve` of a pin with `revert` (the revert run) removes the `revert.commits` from `versions`, clears
+`revert`, sets `revertedAt` and adds the reply `Reverted: <summary> (<commit>)` instead of `Done: ...`; its
+commit is not a new version. `resolve` of any other pin adds its `commit` to `versions`. `dismiss` clears
+`revert` (the go back is cancelled; the fix stays live). A reopen and a user reply that requeues keep
+`revert`: the next run is a revert run again.
+
+The reply that `resolve` and `dismiss` write fits 4000 characters: a long summary or reason is cut, the
+commit stays (v3.5; a summary of 4000 characters gave 400 before).
 
 `resolve` and `dismiss` also accept `waiting`. A **user** reply on a `waiting` pin reopens it
 (status `queued`, same clearing as reopen) in the same transaction, so the auto-fix runner
@@ -242,8 +276,9 @@ store.setShot(id, kind, { type, bytes })        // -> Pin | null; kind "before"|
 store.getShot(id, kind)                         // -> { type, bytes } | null
 store.pruneShots({ olderThanDays: 30 })         // -> number of files removed
 store.updateNote(id, note)                      // -> Pin | null
-store.transition(id, "start"|"resolve"|"dismiss"|"ask"|"reopen"|"accept", { agent, summary, commit, reason, question, run, model, kind, author }) // -> Pin | null, throws ConflictError / ValidationError
-                                                //    kind "user"|"agent" decides the reopens count and the accept guard
+store.transition(id, "start"|"resolve"|"dismiss"|"ask"|"reopen"|"accept"|"revert", { agent, summary, commit, reason, question, run, model, kind, author }) // -> Pin | null, throws ConflictError / ValidationError / ForbiddenError
+                                                //    kind "user"|"agent" decides the reopens count and the accept and revert guards
+                                                //    revert: commit = the first fix to undo (it and every later fix)
 store.deletePin(id)                             // -> boolean
 store.addReply(id, { kind, author, body, reopen }) // -> Reply | null
 store.listReplies(id)                           // -> Reply[] oldest first
@@ -311,6 +346,7 @@ Every browser request passes the hub SSO (admin) in Caddy first. Caddy adds `X-S
 | POST | `/api/pins/:id/ask` | `{ question }` | 200 `{ pin }` |
 | POST | `/api/pins/:id/reopen` | `{}` | 200 `{ pin }` |
 | POST | `/api/pins/:id/accept` | `{}` (users only, else 403; pin `done`, else 409) | 200 `{ pin }` |
+| POST | `/api/pins/:id/revert` | `{ commit }` (users only, else 403; pin `done` or `dismissed` and `commit` in `versions`, else 409) | 200 `{ pin }` |
 | POST | `/api/pins/:id/replies` | `{ body, reopen? }` | 201 `{ reply, pin }` |
 | GET | `/api/settings` | | 200 Settings |
 | PATCH | `/api/settings` | `{ autofix?, bulk?: { on?, delegate?, agents? } }` | 200 Settings |
@@ -404,8 +440,12 @@ shots: before 14:01
 url: https://crete.koglabs.com/pricing?x=1
 ```
 
-The `about`, `presets`, `steps` and `shots` lines appear only when they have content. The list
-format adds ` · <intent>` after the label when `intent` is set. In the list and detail formats
+The detail format also has, after `batch`: `versions: <short sha> <summary> · ...` (oldest first),
+`go back: undo <short sha>, <short sha>` while `revert` is set and `reverted: <hh:mm>` when `revertedAt`
+is set.
+The `about`, `presets`, `steps`, `shots`, `versions`, `go back` and `reverted` lines appear only when they
+have content. The list format adds ` · <intent>` after the label when `intent` is set, and ` · go back`
+while `revert` is set. In the list and detail formats
 every run of whitespace or control characters in a value is one space.
 
 ## CLI `pins` (`server/bin/pins.js`)
@@ -460,8 +500,11 @@ verdict of `judge(intent, before, after)` (`server/src/facts.js`):
 | `style` | a style or the size changed | `check: the look did not change` |
 | `layout` | size, position, display, margin, padding or gap changed | `check: position and size did not change` |
 | none, `behaviour`, `task` | the element is gone, or text, style or size changed | `check: nothing changed on the pinned element` |
+| revert (v3.5: the pin has `revert` or `revertedAt`) | the element came back, went away, or its text, style or size changed | `check: the element did not change back` |
 
-A pass reads `#12 check: changed style, size (color, font)` or `#12 check: the element is gone`.
+A pass reads `#12 check: changed style, size (color, font)` or `#12 check: the element is gone`. In a
+revert, an element that the "before" shot did not find and the "after" shot finds passes as
+`check: the element is back`.
 With no "before" facts, or when only the position moved and the pin has no intent, the verdict is
 open (`ok: null`): `check: no before facts (...)`, `check: only the position moved`. The verdict text
 holds kinds and property names only, never a value from the page. `pins done` prints a negative
@@ -494,6 +537,9 @@ squash-merge the PR; `proj release <key> staging`; take the "after" shot and jud
   stale when the process ends. A wait over 4 minutes ends with exit code 3.
 - It is safe to run again: a merged PR resumes at the release, and a gate that passed for the same
   commit does not run twice.
+- A listed path whose deletion is staged already (after `git revert --no-commit` or `git rm`: it is in no
+  worktree and no index) is not given to `git add`; the commit takes it. A listed path that is in no
+  worktree, no index and no commit stops the commit step with the git error (v3.5).
 - It refuses the paths `.env*`, `*.key`, `*.pem`, `*secret*`, `.git`, `.github/workflows/**` and `infra/**`
   in any letter case, a path through a link, a folder,
   a branch named `main` or `master`, and a tracked file that changed but is not in the list.
@@ -550,7 +596,8 @@ One-shot, `ext.runtime.sendMessage(msg)` returns a promise:
   401 -> `{ ok: false, status: 401, ... }` and the background state becomes `login`.
   The background accepts only paths that match `API_PATH_RE`, at most 2048 characters, and for each
   path only the methods of its route: `health` and `stats` GET; `batches` POST; `settings` GET and
-  PATCH; `pins` GET and POST; `pins/<id>` GET, PATCH and DELETE; `pins/<id>/<action>` POST. A GET
+  PATCH; `pins` GET and POST; `pins/<id>` GET, PATCH and DELETE; `pins/<id>/<action>` POST (the actions
+`start`, `resolve`, `dismiss`, `reopen`, `replies`, `accept` and, since 0.6.0, `revert`). A GET
   with a body is `{ ok: false, status: 400, error: "invalid body" }`. A body over 512 KiB as JSON
   text is `{ ok: false, status: 413, data: null, error: "body too large" }`. A redirect counts as a
   401. On a status 0 answer the content script does not set the connection state by itself. It
@@ -688,7 +735,9 @@ them in one request; the fix run starts at once.
    comes back from the page cache. A change in another tab of the host arrives through
    `storage.onChanged`.
 8. **Toasts** (bottom-left; top on narrow screens; at most 3) for live changes only: a run
-   starts ("Fixing #12 · Opus 5.5 high", then its latest progress step, updated live), a pin is done (summary, **See it**, Open), a
+   starts ("Fixing #12 · Opus 5.5 high", then its latest progress step, updated live; a revert run says
+   "Going back #12 · Opus 5.5 high"), a pin is done (summary, **See it**, Open; after a revert run the
+   title is "Back to the earlier version · #12"), a
    question arrives (the question, Answer), a pin is dismissed. A toast closes when its pin
    changes status or is deleted, its card opens, or the pin is marked seen. After a refetch a toast
    closes when its pin is gone or has another status.
@@ -703,13 +752,30 @@ them in one request; the fix run starts at once.
     or waiting: Dismiss, Reopen, Delete; a reply on a waiting pin requeues it. Done: See it,
     **Looks good** (sends `POST /api/pins/:id/accept`, then marks the pin seen; it marks it seen
     also when the call fails), **Not right** (opens "What is still wrong?"; sending posts the reply
-    with `reopen: true`, so the pin is fixed again at the next effort) and Delete. Delete has an
-    inline confirm. A done card of an accepted pin shows "Accepted" next to the status.
+    with `reopen: true`, so the pin is fixed again at the next effort), **Go back** (below) and Delete.
+    Delete has an inline confirm. A done card of an accepted pin shows "Accepted" next to the status.
+    **Go back** (0.6.0) shows on a `done` or `dismissed` card whose pin has at least one entry in
+    `versions` and no `revert`; title "Go back to an earlier version of this element". It opens an inline
+    panel (it closes the "Not right" box and the Delete confirm, and they close it): the line "Now: fix <n>
+    · <short sha> · <summary>" (only when `versions` holds 2 or more entries; summary clipped to 80
+    characters), then the question "Go back to which version?" with one radio button per earlier version,
+    newest first: "After fix <k> · <short sha> · <summary>" for each entry but the last, and last "Before this
+    pin (the page before any fix)". With one entry there is no choice: the panel says "Go back to the page
+    before this pin? An agent undoes <short sha> and ships the old version." The default choice is "Before
+    this pin". The buttons are **Go back** (it sends `POST /api/pins/:id/revert { commit }`, `commit` = the
+    entry right after the chosen version: `versions[0]` for "Before this pin", `versions[k]` for "After fix
+    k") and **Keep** (closes the panel). Esc closes the panel and keeps the card. While the call runs the
+    Go back button is disabled; an error shows in the card and keeps the panel open. On success the card
+    shows the new state (queued).
+    A card whose pin has `revert` shows "Going back" next to the status and hides Edit; its other buttons
+    follow the status (Dismiss cancels the go back; the fix stays live). A `done` card with `revertedAt`
+    shows "Reverted" next to the status. The short sha is the first 7 characters of the commit.
     A card whose pin does not load shows the reason and the status "Not loaded".
 11. **Log.** A panel at the top right (full width on narrow screens): "Not sent" with Submit all,
     then the sent pins of this host grouped by batch, newest first, with "2/3 done", a status
     chip, the note, element and path, and the summary and short commit, the question, or the
-    latest progress step of a working pin. Rows open their pin (or their page). It loads `GET /api/pins?host=&status=all&limit=100`
+    latest progress step of a working pin. A pin with `revert` has the chip text "Going back"; a done
+    pin with `revertedAt` has "Reverted". Rows open their pin (or their page). It loads `GET /api/pins?host=&status=all&limit=100`
     and updates live. The footer links to the Triad Pins tab. A screen reader reads each row itself
     (status, number, note, element, detail); the title of the row is "Open pin 12". When the Log
     closes by Esc, its close button or the shortcut, the focus goes to the Log button if the menu is
@@ -1014,10 +1080,29 @@ code, writes git state or deploys. A Claude session does that, under the standin
     say that it closes the pin and that its output is the live check (no second look at the live
     page). The lean line follows the model line. Without brief, shot and
     profile the prompt is the v3.1 text.
+16. **Revert run** (v3.5). A queued pin with `revert` starts its own run, also with bulk mode on (it never
+    joins a bulk run). Label `Pin #12 · Go back: <title> · Opus 5.5 high`. The model rule of item 6 holds,
+    but the runs count from the request: the effort uses `attempts - revert.attempts` in place of
+    `attempts`, and so does the retry of item 10 (one retry at the next effort, then `ask`). The start is
+    lean (`profile: "pin"`; with `PINS_RUNNER_LEAN=0` the full start). The runner reads no history and no
+    siblings; the brief gives the project card only (no source hints). The harness takes the "before"
+    shot (item 13): it shows the page with the fix. The prompt (`buildRevertPrompt`) holds, in this order:
+    who he is and that he pressed Go back on the pin; the model and lean lines; the commits to undo,
+    newest first (short sha, fix number, date, summary, fenced as agent text); the version he goes back
+    to ("the page before this pin" or "the page after fix <k> (<short sha>)"); his words (note, About,
+    thread) as context; the `<page-data>` block and its rule; the project line and card; how to work: own
+    worktree `/srv/work/<repo>-pin<id>` from origin/main, `git revert --no-commit <sha>` for each commit
+    newest first (fetch first when git does not know it; a commit that is undone already is skipped; when
+    a later commit changed the same lines, keep the later work and remove only the change of this pin),
+    2 to 4 progress steps, the ship (with `ship` true: `pins ship <id> --dir <worktree> --message "Revert
+    pin #<id>: ..." --summary "..." <every changed file, also deleted ones>`; else the project ship and
+    `pins done <id> --summary ... --commit <sha>`), ask only when a commit cannot be found or the undo
+    would remove other work, never dismiss (if the old version is live already, `pins done` without a
+    commit), and the hard end state.
 
 ### Bulk mode (runner, while `settings.bulk.on` is `true`)
 
-1. **Grouping.** The queued pins of one `batch` form one bulk run, due at once (the server writes a whole
+1. **Grouping.** The queued pins of one `batch` form one bulk run (a pin with `revert` never: item 16), due at once (the server writes a whole
    batch before it sends an event; the runner lists `?batch=<id>&status=queued` before it starts, as v2 did).
    A pin without a batch still gets its own run (item 3). The setting is read when the run starts; a change
    never touches a run that already runs. A bulk run holds at most 30 pins (the batch limit).

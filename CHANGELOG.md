@@ -6,6 +6,23 @@ The headings are versions of the contract (`docs/protocol.md`). The extension ha
 
 ## [Unreleased]
 
+## [3.5] - 2026-11-14
+
+Extension 0.6.0.
+
+### Added
+
+- Go back: a closed pin with a live fix has a "Go back" button in its card. You choose the version: the page before the pin, or the page after an earlier fix. `POST /api/pins/:id/revert { commit }` (users only) queues the pin with `revert`; the runner starts one revert run (lean, the project card, effort high with one retry counted from the request) that undoes the commits newest first, ships the old version and closes the pin.
+- The pin JSON has `versions` (the live fix commits, oldest first), `revert` and `revertedAt`. The first open of an older database reads the versions from the `Done: <summary> (<commit>)` replies.
+- `pins show` and `pins_get` print `versions:`, `go back:` and `reverted:`; `pins list` marks a go back. The element verdict has a revert rule: the element came back, went away or changed.
+- Extension: the card shows "Going back" and "Reverted"; the run toast says "Going back #12"; the done toast says "Back to the earlier version · #12"; the Log chip says "Going back" or "Reverted".
+
+### Fixed
+
+- A resolve or a dismiss with a 4000-character summary or reason failed with 400, because its reply went over 4000 characters. The reply text is now cut; the commit stays.
+- `pins ship` stopped at `git add` when a listed file was deleted and the deletion was staged already (`git revert`, `git rm`).
+- Extension: a clipped text in the UI no longer ends with half an emoji.
+
 ## [3.4] - 2026-11-14
 
 Extension 0.5.0. The first public release.

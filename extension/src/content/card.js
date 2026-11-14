@@ -3,7 +3,7 @@ import { ext, MSG, RUN_URL, SHOT_KINDS } from '../shared/protocol.js';
 import { HOST, SHOT_CACHE, SHOT_WIDTH } from './env.js';
 import { resolveTarget } from './target.js';
 import { ABOUT, SCOPE } from './prefs.js';
-import { elapsed, isOpen, modelName, statusText, when } from './format.js';
+import { elapsed, goBack, isOpen, modelName, revertTag, statusText, when } from './format.js';
 import { announce, button, el, errorNode, link, panelShell, setTitle, textarea } from './dom.js';
 import { schedule, setError, showFlash, syncWatchers } from './layout.js';
 import { api } from './live.js';
@@ -77,6 +77,7 @@ export function refreshCard(instance, pin) {
   instance.status.dataset.status = pin.status;
   instance.accepted.hidden = pin.status !== 'done' || !pin.acceptedAt;
   instance.accepted.title = pin.acceptedAt ? `You accepted it ${when(pin.acceptedAt)}` : '';
+  instance.tag.textContent = revertTag(pin); instance.tag.hidden = !instance.tag.textContent;
   instance.note.textContent = pin.note;
   const tags = [ABOUT[pin.intent]?.[0], SCOPE[pin.scope]?.[0]].filter(Boolean).map(text => el('span', 'chip', text));
   for (const preset of Array.isArray(pin.presets) ? pin.presets : []) {
@@ -110,11 +111,14 @@ export function refreshCard(instance, pin) {
   instance.commit.textContent = pin.commit ? `Commit ${pin.commit}` : ''; instance.commit.hidden = !pin.commit;
   if (!instance.busy) instance.panel.querySelectorAll('button').forEach(node => { node.disabled = false; });
   const closed = pin.status === 'done' || pin.status === 'dismissed';
-  instance.edit.hidden = pin.status !== 'queued';
+  instance.edit.hidden = pin.status !== 'queued' || Boolean(pin.revert);
   instance.dismiss.hidden = !isOpen(pin);
   instance.reopen.hidden = pin.status !== 'working' && pin.status !== 'waiting';
   instance.see.hidden = pin.status !== 'done';
   instance.good.hidden = pin.status !== 'done' || Boolean(pin.acceptedAt);
+  const back = Boolean(goBack(pin));
+  instance.backOpen &&= back;
+  instance.back.hidden = !back || instance.backOpen; instance.backBox.hidden = !instance.backOpen;
   // Open pins take replies. A closed pin shows "Not right", which opens the reply box.
   instance.replyForm.hidden = closed && !instance.wrongOpen;
   instance.wrong.hidden = !closed || instance.wrongOpen;
@@ -186,15 +190,45 @@ async function cardAction(instance, method, suffix = '', body) {
   } catch (error) { if (card === instance) setError(instance.error, error.message); return false; }
   finally { instance.busy = false; buttons.forEach(node => { node.disabled = false; }); }
 }
+// Go back (v3.5): an inline panel. Opening it closes the Not right box and the Delete confirm.
+export function setBack(instance, open) {
+  instance.backOpen = open;
+  if (open) { instance.wrongOpen = false; instance.confirm.hidden = true; renderBack(instance); }
+  refreshCard(instance, instance.pin);
+  (open ? instance.backBox.querySelector(':checked') || instance.backBox.querySelector('.primary') : instance.back).focus();
+}
+function renderBack(instance) {
+  const { now, ask, choices } = goBack(instance.pin);
+  let question = el('p', '', ask);
+  if (choices.length > 1) {
+    question = el('fieldset');
+    question.append(el('legend', '', ask));
+    choices.forEach((choice, index) => {
+      const label = el('label'), input = el('input');
+      Object.assign(input, { type: 'radio', name: 'go-back', value: choice.commit, checked: index === choices.length - 1 });
+      label.append(input, el('span', '', choice.label));
+      question.append(label);
+    });
+  }
+  const footer = el('div', 'panel-footer');
+  footer.append(button('Keep the version that is live now', 'Keep', () => setBack(instance, false)), button('Start a run that ships the chosen version', 'Go back', async () => {
+    const commit = instance.backBox.querySelector(':checked')?.value ?? choices.at(-1).commit;
+    if (await cardAction(instance, 'POST', '/revert', { commit }) && card === instance) {
+      announce(`Pin ${instance.id} goes back to the chosen version.`);
+      instance.panel.focus({ preventScroll: true });
+    }
+  }, 'primary'));
+  instance.backBox.replaceChildren(...(now ? [el('p', 'detail', now)] : []), question, footer);
+}
 export async function openCard(id, scroll = false) {
   closePopup(); closeCard(false); closeLog(); closeSettings(false);
   dropToast(`pin:${id}`);
   const instance = panelShell('thread', `Pin ${id}`, () => closeCard());
-  Object.assign(instance, { id, replies: new Map(), busy: false, wrongOpen: false, steps: [], count: pins.get(id)?.progress?.count || 0, timer: 0 });
+  Object.assign(instance, { id, replies: new Map(), busy: false, wrongOpen: false, backOpen: false, steps: [], count: pins.get(id)?.progress?.count || 0, timer: 0 });
   instance.status = el('span', 'status', 'Loading…');
   instance.accepted = el('span', 'accepted', 'Accepted'); instance.accepted.hidden = true;
-  instance.head.insertBefore(instance.status, instance.close);
-  instance.head.insertBefore(instance.accepted, instance.close);
+  instance.tag = el('span', 'revert-tag'); instance.tag.hidden = true;
+  for (const node of [instance.status, instance.accepted, instance.tag]) instance.head.insertBefore(node, instance.close);
   const body = el('div', 'panel-body');
   instance.note = el('p', 'note');
   instance.question = el('p', 'question'); instance.question.hidden = true;
@@ -257,7 +291,7 @@ export async function openCard(id, scroll = false) {
     if (ok) closeCard();
   });
   instance.wrong = button('Send this pin back for another fix', 'Not right', () => {
-    instance.wrongOpen = true; instance.replyForm.hidden = false;
+    instance.wrongOpen = true; instance.backOpen = false; instance.replyForm.hidden = false;
     if (instance.pin) refreshCard(instance, instance.pin);
     instance.reply.focus();
   });
@@ -267,14 +301,19 @@ export async function openCard(id, scroll = false) {
   });
   instance.dismiss = button('Dismiss this pin', 'Dismiss', () => cardAction(instance, 'POST', '/dismiss', {}));
   instance.reopen = button('Reopen this pin', 'Reopen', () => cardAction(instance, 'POST', '/reopen', {}));
-  for (const node of [instance.see, instance.good, instance.wrong, instance.edit, instance.dismiss, instance.reopen]) node.hidden = true;
-  const confirm = el('div', 'confirm'); confirm.hidden = true;
-  const deleteButton = button('Delete this pin', 'Delete', () => { confirm.hidden = false; confirmDelete.focus(); schedule(); }, 'danger');
+  instance.back = button('Go back to an earlier version of this element', 'Go back', () => setBack(instance, true));
+  instance.backBox = el('div', 'go-back');
+  for (const node of [instance.see, instance.good, instance.wrong, instance.back, instance.backBox, instance.edit, instance.dismiss, instance.reopen]) node.hidden = true;
+  const confirm = instance.confirm = el('div', 'confirm'); confirm.hidden = true;
+  const deleteButton = button('Delete this pin', 'Delete', () => {
+    if (instance.backOpen) setBack(instance, false);
+    confirm.hidden = false; confirmDelete.focus(); schedule();
+  }, 'danger');
   instance.delete = deleteButton;
   const confirmDelete = button('Confirm deletion of this pin', 'Delete pin', () => cardAction(instance, 'DELETE'), 'danger');
   confirm.append(el('span', '', 'Delete this pin?'), button('Keep this pin', 'Cancel', () => { confirm.hidden = true; deleteButton.focus(); schedule(); }), confirmDelete);
-  actions.append(instance.see, instance.good, instance.wrong, instance.edit, instance.dismiss, instance.reopen, deleteButton);
-  instance.panel.append(body, actions, confirm);
+  actions.append(instance.see, instance.good, instance.wrong, instance.back, instance.edit, instance.dismiss, instance.reopen, deleteButton);
+  instance.panel.append(body, actions, instance.backBox, confirm);
   card = instance;
   instance.panel.querySelectorAll('button').forEach(node => { if (node !== instance.close) node.disabled = true; });
   if (pins.has(id)) refreshCard(instance, pins.get(id));

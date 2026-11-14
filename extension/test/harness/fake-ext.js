@@ -49,7 +49,7 @@ function create(body, batch = null) {
     id: db.nextPin++, status: 'queued', url: url.href, host: url.host.toLowerCase(), path: url.pathname,
     title: (body.title || '').slice(0, 300), note: body.note.trim(), quote: body.quote?.slice(0, 2000) || null,
     targets: copy(body.targets), viewport: body.viewport || null, author: 'tester', agent: null,
-    summary: null, commit: null, run: null, batch, model: null, attempts: 0, acceptedAt: null, reopens: 0,
+    summary: null, commit: null, run: null, batch, model: null, attempts: 0, acceptedAt: null, reopens: 0, versions: [], revert: null, revertedAt: null,
     intent: body.intent ?? null, scope: body.scope ?? null, presets: copy(body.presets ?? []), progress: null, shots: { before: null, after: null }, replyCount: 0, createdAt: now(), updatedAt: now(), startedAt: null, closedAt: null,
   };
   db.pins.push(pin); save(); return pin;
@@ -70,9 +70,9 @@ function reply(pin, body, kind = 'user') {
   const item = { id: db.nextReply++, pinId: pin.id, kind, author: kind === 'agent' ? 'test-agent' : 'tester', body: text(body, 'body'), createdAt: now() };
   db.replies.push(item); pin.replyCount++; pin.updatedAt = now(); save(); return item;
 }
-// A user reopen, as the store does it: clears the run and the acceptance, counts the reopen.
+// A user reopen, as the store does it: clears the run, the acceptance and the go back result, counts the reopen.
 function reopenPin(pin) {
-  Object.assign(pin, { status: 'queued', agent: null, summary: null, commit: null, run: null, startedAt: null, closedAt: null, acceptedAt: null });
+  Object.assign(pin, { status: 'queued', agent: null, summary: null, commit: null, run: null, startedAt: null, closedAt: null, acceptedAt: null, revertedAt: null });
   pin.reopens++;
 }
 // PATCH /api/settings merges. An unknown key, a wrong type or agents outside 1 to 8 is 400 and changes nothing.
@@ -100,7 +100,7 @@ function handle({ method, path, body }) {
     if (lostResponses > 0) { lostResponses--; return { ok: false, status: 0, data: null, error: 'offline' }; }
     return success(data, status);
   }
-  const match = /^\/api\/pins(?:\/([1-9][0-9]{0,11})(?:\/(start|resolve|dismiss|ask|reopen|replies|accept))?)?$/.exec(url.pathname);
+  const match = /^\/api\/pins(?:\/([1-9][0-9]{0,11})(?:\/(start|resolve|dismiss|ask|reopen|replies|accept|revert))?)?$/.exec(url.pathname);
   if (!match) return failure('Not found', 404);
   if (!match[1]) {
     if (method === 'GET') {
@@ -137,7 +137,7 @@ function handle({ method, path, body }) {
     save();
     return success({ reply: copy(item), pin: copy(pin) }, 201);
   }
-  const allowed = { start: ['queued'], resolve: ['queued', 'working', 'waiting'], dismiss: ['queued', 'working', 'waiting'], ask: ['queued', 'working'], reopen: ['working', 'waiting', 'done', 'dismissed'], accept: ['done'] };
+  const allowed = { start: ['queued'], resolve: ['queued', 'working', 'waiting'], dismiss: ['queued', 'working', 'waiting'], ask: ['queued', 'working'], reopen: ['working', 'waiting', 'done', 'dismissed'], accept: ['done'], revert: ['done', 'dismissed'] };
   if (!allowed[action]?.includes(pin.status)) return failure('Status conflict', 409);
   pin.updatedAt = now();
   if (action === 'start') {
@@ -146,9 +146,23 @@ function handle({ method, path, body }) {
   }
   if (action === 'resolve') {
     pin.summary = text(body?.summary, 'summary'); pin.commit = body?.commit || null; pin.status = 'done'; pin.closedAt = now();
-    reply(pin, `Done: ${pin.summary}${pin.commit ? ` (${pin.commit})` : ''}`, 'agent');
+    // The revert run removes the fixes that it undid; any other resolve adds a version.
+    const reverted = Boolean(pin.revert);
+    if (reverted) { pin.versions = pin.versions.filter(item => !pin.revert.commits.includes(item.commit)); pin.revert = null; pin.revertedAt = now(); }
+    else if (pin.commit) pin.versions = [...pin.versions, { commit: pin.commit, summary: pin.summary, at: now() }].slice(-30);
+    reply(pin, `${reverted ? 'Reverted' : 'Done'}: ${pin.summary}${pin.commit ? ` (${pin.commit})` : ''}`, 'agent');
   }
-  if (action === 'dismiss') { pin.status = 'dismissed'; pin.summary = body?.reason || null; pin.closedAt = now(); }
+  if (action === 'dismiss') { pin.status = 'dismissed'; pin.summary = body?.reason || null; pin.closedAt = now(); pin.revert = null; }
+  // Go back: the chosen commit and every later fix are undone, newest first.
+  if (action === 'revert') {
+    if (typeof body?.commit !== 'string' || !body.commit) return failure('commit is required');
+    const at = pin.versions.findIndex(item => item.commit === body.commit);
+    if (at < 0) return failure('That commit is not a version of this pin.', 409);
+    const commits = pin.versions.slice(at).map(item => item.commit).reverse();
+    pin.revert = { commits, at: now(), attempts: pin.attempts };
+    reopenPin(pin);
+    reply(pin, `Go back to ${at ? `fix ${at} (${pin.versions[at - 1].commit.slice(0, 7)})` : 'the version before this pin'}: undo ${commits.map(commit => commit.slice(0, 7)).join(', ')}.`);
+  }
   if (action === 'ask') { pin.status = 'waiting'; reply(pin, text(body?.question, 'question'), 'agent'); }
   if (action === 'reopen') reopenPin(pin);
   if (action === 'accept') pin.acceptedAt ??= now(); // once; a second accept changes nothing

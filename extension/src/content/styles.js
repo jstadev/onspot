@@ -136,7 +136,7 @@ textarea::placeholder, input::placeholder { color: var(--muted); }
 .status[data-status='waiting'] { color: #c4b5fd; }
 .status[data-status='done'] { color: var(--done); }
 .status[data-status='dismissed'] { color: var(--muted); }
-.accepted { color: var(--done); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.accepted, .revert-tag { color: var(--done); font-size: 11px; font-weight: 600; white-space: nowrap; }
 .note { margin: 0 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .summary { margin: 0 0 10px; color: #bbf7d0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .question { margin: -6px 0 12px; color: #ddd6fe; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -164,6 +164,13 @@ textarea::placeholder, input::placeholder { color: var(--muted); }
 .reply-form { margin-top: 12px; }
 .confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0 12px 10px; }
 .confirm span { flex: 1; font-size: 12px; }
+.go-back { padding: 0 12px 10px; display: grid; gap: 6px; }
+.go-back p, .go-back fieldset { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.go-back fieldset { border: 0; padding: 0; min-width: 0; display: grid; gap: 2px; }
+.go-back legend { padding: 0 0 4px; font-size: 12px; font-weight: 600; }
+.go-back label { display: flex; align-items: flex-start; gap: 8px; min-height: 32px; padding: 6px 4px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+@media (hover: hover) { .go-back label:hover { background: var(--raised); } }
+.go-back input { flex: none; width: 16px; height: 16px; margin: 1px 0 0; padding: 0; accent-color: var(--accent); cursor: pointer; }
 .sheet-title { display: flex; justify-content: space-between; margin: 16px 0 6px; font-size: 11px; font-weight: 600; color: var(--muted); }
 .sheet-title:first-child { margin-top: 0; }
 .row { display: flex; align-items: center; gap: 2px; min-height: 40px; border-top: 1px solid var(--line); }

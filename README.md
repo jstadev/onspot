@@ -30,6 +30,8 @@ The contract between all parts is [`docs/protocol.md`](docs/protocol.md). If the
                                        +--------------------------------------------------+
 ```
 
+Each closed pin keeps the commits of its fixes. **Go back** in the pin card starts a revert run: you choose the version (the page before the pin, or after an earlier fix), the session undoes the later commits, ships the old version and closes the pin.
+
 | Part | Path | What it does |
 |---|---|---|
 | Extension | `extension/` | MV3 extension for Chrome and Firefox. The content script draws the picker, the note popup, the markers and the cards. The background script does all network and reads the live stream. |
@@ -65,7 +67,7 @@ In a second shell:
 export PINS_PORT=4751 PINS_AGENT=demo
 
 curl -s http://127.0.0.1:4751/api/health
-# {"ok":true,"version":"0.1.0","extension":"0.5.0","open":{"queued":0,"working":0,"waiting":0}}
+# {"ok":true,"version":"0.1.0","extension":"0.6.0","open":{"queued":0,"working":0,"waiting":0}}
 
 # Create a pin as a user (no X-Pins-Agent header). The extension does this for you.
 curl -s -X POST http://127.0.0.1:4751/api/pins -H 'Content-Type: application/json' \
@@ -171,9 +173,9 @@ To report a problem, read [`SECURITY.md`](SECURITY.md).
 
 ```sh
 npm --prefix extension ci    # one time: the extension tests run the build
-npm test                     # server 154, runner 139, extension 78, e2e helpers 12 tests
+npm test                     # server 166, runner 143, extension 84, e2e helpers 12 tests
 node deploy/caddy.check.mjs  # the proxy rules against a real Caddy (needs the caddy binary)
-npm run harness              # the extension UI: 53 groups in Chromium and 53 in Firefox
+npm run harness              # the extension UI: 59 groups in Chromium and 59 in Firefox
 ```
 
 - The tests use an in-memory store, ports that the system picks and temp folders. They send nothing to a running server.
@@ -211,7 +213,7 @@ OnSpot runs in one deployment today. These parts are tied to it.
 - **Prompt text.** The prompt names tools and paths of the current host: `maestro session`, `/root/triad/bin/triad delegate`, worktrees under `/srv/work`, `https://ai.koglabs.com/dev` (`runner/src/prompt.js`).
 - **`pins ship`.** It needs `deploy/project.json` in the target project and the command `proj release <key> staging`. `proj` is not in this repo. Without them the command says "ship by hand".
 - **The "before" shot.** The runner starts it with `/usr/bin/systemd-run` (`runner/src/index.js`).
-- **Versions.** The contract is at v3.4 and the extension at 0.5.0. The server and the runner report 0.1.0.
+- **Versions.** The contract is at v3.5 and the extension at 0.6.0. The server and the runner report 0.1.0.
 - **Firefox.** The add-on is not signed.
 
 ## Licence

@@ -8,7 +8,7 @@ export function apiRoute(path) {
   if (path === "/api/settings") return { name: "settings", methods: ["GET", "PATCH"] };
   if (path === "/api/pins") return { name: "pins", methods: ["GET", "POST"] };
   if (path === "/api/batches") return { name: "batches", methods: ["POST"] };
-  const match = /^\/api\/pins\/([^/]+)(?:\/(start|resolve|dismiss|ask|reopen|accept|replies|progress|shots\/(before|after)))?$/.exec(path);
+  const match = /^\/api\/pins\/([^/]+)(?:\/(start|resolve|dismiss|ask|reopen|accept|revert|replies|progress|shots\/(before|after)))?$/.exec(path);
   const id = match && parseId(match[1]);
   if (!id) return null;
   if (match[3]) return { name: "shot", id, kind: match[3], methods: ["GET", "PUT"] };

@@ -1,5 +1,5 @@
 # Plan
-Current version: v3.4.0 (2026-11-14, the first public release; the units run `/srv/hub/pins`)
+Current version: v3.5.0 (2026-11-14, Go back on each pin; the units run `/srv/hub/pins`)
 Goal: not recorded
 
 ## Next release: v1.0.0
@@ -21,4 +21,5 @@ Goal: not recorded
 - Adopt the project contract release (`proj release kog-pins prod`): back up `pins.db`, move the data to the release folder, give the service user what the runner needs, point the `pins` wrapper at the release, create the env file, then release and check. Until then the command must not run (source: `AGENTS.md` "Release"; the unit template headers in `deploy/units`)
 
 ## Done
+- v3.5.0 (2026-11-14): Go back. A closed pin with a live fix returns the page to the version before the pin or after an earlier fix (order: "add a reverse button to the previous version on each pin ... full solid").
 - v3.4.0 (2026-11-14): OnSpot (was Kog Pins), first public release at https://github.com/jstadev/onspot.

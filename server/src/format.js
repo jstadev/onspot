@@ -4,6 +4,7 @@ const text = oneLine;
 const quoted = (value) => JSON.stringify(text(value));
 const entries = (value) => Object.entries(value ?? {}).filter(([, v]) => text(v));
 const clock = (iso) => iso?.slice(11, 16);
+const short = (sha) => text(sha).slice(0, 7);
 
 export function formatAge(iso, now = Date.now()) {
   const age = new Date(now).getTime() - new Date(iso).getTime();
@@ -26,6 +27,7 @@ export function formatList(pins, { now = Date.now() } = {}) {
       `${formatLine(pin)} ${pin.host}${pin.path}`,
       text(pin.targets?.[0]?.label),
       text(pin.intent),
+      pin.revert ? "go back" : "",
       formatAge(pin.createdAt, now),
       pin.replyCount > 0 ? `${pin.replyCount} ${pin.replyCount === 1 ? "reply" : "replies"}` : "",
     ];
@@ -43,6 +45,9 @@ export function formatDetail(pin, replies = [], steps = []) {
   for (const key of ["agent", "model", "summary", "commit", "run", "batch"]) {
     if (text(pin[key])) lines.push(`${key}: ${text(pin[key])}`);
   }
+  if (pin.versions?.length) lines.push(`versions: ${pin.versions.map((v) => `${short(v.commit)} ${text(v.summary).slice(0, 80)}`).join(" · ")}`);
+  if (pin.revert?.commits?.length) lines.push(`go back: undo ${pin.revert.commits.map(short).join(", ")}`);
+  if (pin.revertedAt) lines.push(`reverted: ${clock(pin.revertedAt)}`);
   for (const [index, target] of (pin.targets ?? []).entries()) {
     lines.push(`target ${index + 1}: ${text(target.label)}`);
     if (text(target.selector)) lines.push(`  selector: ${text(target.selector)}`);

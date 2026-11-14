@@ -228,7 +228,7 @@ test("a v2 file opens as v3: every pin, reply, batch and setting stays; the new 
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "pins.db");
   const old = createV2Database(file);
-  const rows = old.prepare("SELECT * FROM pins ORDER BY id").all().map((row) => ({ ...row, intent: null, scope: null, presets: null, shot_before: null, shot_after: null, accepted_at: null, reopens: null }));
+  const rows = old.prepare("SELECT * FROM pins ORDER BY id").all().map((row) => ({ ...row, intent: null, scope: null, presets: null, shot_before: null, shot_after: null, accepted_at: null, reopens: null, versions: null, revert: null, reverted_at: null }));
   const replies = old.prepare("SELECT * FROM replies ORDER BY id").all();
   const batches = old.prepare("SELECT * FROM batches ORDER BY id").all();
   const rootpage = old.prepare("SELECT rootpage FROM sqlite_schema WHERE name = 'pins'").get().rootpage;
