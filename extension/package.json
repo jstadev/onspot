@@ -1,0 +1,15 @@
+{
+  "name": "onspot-extension",
+  "version": "0.5.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "OnSpot browser extension (Chrome and Firefox, MV3).",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

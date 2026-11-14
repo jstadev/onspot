@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "key": "kog-pins",
+  "name": "OnSpot",
+  "tier": "internal",
+  "parent": null,
+  "repo": "jstadev/onspot",
+  "source": "/srv/hub/pins",
+  "memory": "projects/kog-pins",
+  "release": {
+    "engine": "standard",
+    "build": "npm --prefix extension ci && npm --prefix extension run build",
+    "test": "npm test",
+    "migrate": null,
+    "script": null
+  },
+  "runtime": {
+    "user": "onspot",
+    "node": "/opt/studio/bin",
+    "units": [
+      "onspot",
+      "onspot-runner"
+    ],
+    "timers": []
+  },
+  "health": "/api/health",
+  "database": {
+    "kind": "sqlite",
+    "schema": null,
+    "url_env": "PINS_DB",
+    "supabase_auth": false
+  },
+  "channels": {
+    "prod": {
+      "domains": [],
+      "port": 4750,
+      "env": [
+        "/etc/kog-pins/app.env"
+      ],
+      "data": [
+        "/srv/apps/kog-pins/data/prod"
+      ]
+    },
+    "staging": null
+  },
+  "legacy": {
+    "user": "root",
+    "units": {
+      "onspot": "onspot.service",
+      "onspot-runner": "onspot-runner.service"
+    },
+    "paths": {
+      "code": "/srv/hub/pins",
+      "env": [],
+      "data": [
+        "/var/lib/private/onspot",
+        "/var/lib/onspot-runner"
+      ],
+      "secret_files": [
+        "/srv/hub/triad/data/token",
+        "/root/.config/onspot/chrome-extension-key.pem"
+      ],
+      "cli": "/usr/local/bin/pins (deploy/pins)",
+      "caddy": "/etc/caddy/onspot.caddy (deploy/onspot.caddy), imported inside the ai.koglabs.com site"
+    }
+  }
+}

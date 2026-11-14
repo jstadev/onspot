@@ -1,0 +1,3 @@
+#!/bin/sh
+# /usr/local/bin/pins: the OnSpot CLI for local agents (Node 22 from /opt/studio).
+exec /opt/studio/bin/node /srv/hub/pins/server/bin/pins.js "$@"

@@ -1,0 +1,59 @@
+# proj template (deploy/project.json, runtime.units). The live unit today is deploy/onspot-runner.service (root).
+# Harness only: it starts fix runs in Triad, no git writes, no deploy.
+# As a service user the runner needs read access to the Triad token file, to the project index and
+# to the project folders, and a way to start the unit of the "before" shot (systemd-run needs root).
+[Unit]
+Description=OnSpot ({{CHANNEL}}): auto-fix runner
+After={{KEY}}.service
+
+[Service]
+Type=simple
+User={{USER}}
+WorkingDirectory={{DIR}}
+Environment=PINS_PORT={{PORT}}
+Environment=PINS_RUNNER_DISABLED=0
+Environment=TRIAD_URL=http://127.0.0.1:7788
+# The service user needs read access to this file (today ops:ops 0600, read by root).
+Environment=TRIAD_TOKEN_FILE=/srv/hub/triad/data/token
+Environment=MAX_RUNS=0
+Environment=MAX_RUNS_PER_PROJECT=0
+Environment=MAX_RUNS_PER_DAY=0
+Environment=PINS_RUNNER_BUDGET_FILE={{DATA}}/runner/budget.json
+# Drop store previews: the Drop worker (store.pins) edits store content for these pins.
+Environment=PINS_RUNNER_SKIP_HOSTS=.drop.koglabs.com
+{{ENV}}
+ExecStart={{NODE}}/node {{DIR}}/runner/src/index.js
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+# The runner reads /root/.claude/memory-store/projects to map a host to a project folder.
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+# Hardening. The runner talks only to loopback (the Pins server and Triad).
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+IPAddressDeny=any
+IPAddressAllow=localhost
+UMask=0077
+ReadWritePaths={{DATA}}
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

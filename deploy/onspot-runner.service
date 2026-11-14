@@ -1,0 +1,56 @@
+# OnSpot auto-fix runner: starts one agent session per pin through Triad (docs/protocol.md).
+# Harness only: no git writes, no deploy. It runs as root today; see PLAN.md.
+# Install: cp deploy/onspot-runner.service /etc/systemd/system/ && systemctl enable --now onspot-runner
+[Unit]
+Description=OnSpot auto-fix runner
+After=onspot.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/srv/hub/pins
+ExecStart=/opt/studio/bin/node /srv/hub/pins/runner/src/index.js
+Environment=PINS_PORT=4750
+Environment=PINS_RUNNER_DISABLED=0
+Environment=TRIAD_URL=http://127.0.0.1:7788
+Environment=TRIAD_TOKEN_FILE=/srv/hub/triad/data/token
+Environment=MAX_RUNS=0
+Environment=MAX_RUNS_PER_PROJECT=0
+Environment=MAX_RUNS_PER_DAY=0
+Environment=PINS_RUNNER_BUDGET_FILE=/var/lib/onspot-runner/budget.json
+# Drop store previews: the Drop worker (store.pins) edits store content for these pins.
+Environment=PINS_RUNNER_SKIP_HOSTS=.drop.koglabs.com
+StateDirectory=onspot-runner
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=3
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+# Hardening. The runner talks only to loopback (the Pins server and Triad).
+# Root keeps one capability: read files of other users (the Triad token, project folders).
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+IPAddressDeny=any
+IPAddressAllow=localhost
+UMask=0077
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

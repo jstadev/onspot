@@ -1,0 +1,34 @@
+# dependencies and build output
+node_modules/
+dist/
+extension/dist/
+coverage/
+
+# databases and runtime data
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# env files and keys (project contract)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.crx
+*.xpi
+
+# logs
+*.log
+
+# editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

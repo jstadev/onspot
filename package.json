@@ -1,0 +1,14 @@
+{
+  "name": "onspot",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "test": "npm --prefix server test && npm --prefix runner test && npm --prefix extension test && node --test e2e/lib.test.mjs",
+    "build": "npm --prefix extension run build",
+    "start": "npm --prefix server start",
+    "e2e": "node e2e/run.mjs",
+    "harness": "node extension/test/harness/run.mjs"
+  }
+}

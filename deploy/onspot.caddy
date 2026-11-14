@@ -1,0 +1,56 @@
+# --- /pins/ : OnSpot queue and API (onspot.service, 127.0.0.1:4750) ---
+# Imported inside the ai.koglabs.com site, before its catch-all handle.
+# Pins become agent work orders, so the hub SSO (admin) is the only gate; never drop it.
+# Allowed Origins: ai.koglabs.com (the Triad Pins tab) and the OnSpot extension (Chrome has a fixed ID
+# from its manifest key; Firefox gives each install a random moz-extension UUID). No web
+# page can send an extension Origin. The server refuses any Origin, so Caddy strips it.
+# MCP is for local agents only and is never served here.
+redir /pins /pins/ 308
+@pins path /pins/*
+handle @pins {
+	route {
+		header {
+			X-Content-Type-Options "nosniff"
+			X-Robots-Tag "noindex, nofollow, noarchive"
+			Referrer-Policy "same-origin"
+			-Server
+		}
+		@pins_mcp path /pins/mcp /pins/mcp/*
+		respond @pins_mcp 404
+		@pins_foreign {
+			header Origin *
+			not header_regexp Origin ^(https://ai\.koglabs\.com|chrome-extension://djdijfjclpkhleoeaedeglfbbbmhmbff|moz-extension://[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$
+		}
+		respond @pins_foreign 403
+		@pins_blind_write {
+			not method GET HEAD
+			not header Origin *
+		}
+		respond @pins_blind_write 403
+		# Browser requests always act as the signed-in user, never as an agent.
+		request_header -X-Pins-Agent
+		forward_auth 127.0.0.1:3000 {
+			uri /api/sso/verify?require=admin
+			header_up Accept application/json
+			copy_headers X-SSO-User
+			@bad status 401 403 429
+			handle_response @bad {
+				# A signed-out page load goes to the hub login and back; API calls get the status.
+				@nav header Sec-Fetch-Mode navigate
+				handle @nav {
+					redir https://ai.koglabs.com/login?next=https://ai.koglabs.com{uri} 302
+				}
+				handle {
+					copy_response
+				}
+			}
+		}
+		uri strip_prefix /pins
+		reverse_proxy 127.0.0.1:4750 {
+			header_up Host 127.0.0.1:4750
+			header_up -Origin
+			# SSE: send each event at once.
+			flush_interval -1
+		}
+	}
+}

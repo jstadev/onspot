@@ -1,0 +1,14 @@
+{
+  "name": "onspot-server",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "OnSpot server: REST, SSE, MCP and the pins CLI. No npm dependencies.",
+  "engines": { "node": ">=22.13" },
+  "bin": { "pins": "bin/pins.js" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\""
+  }
+}

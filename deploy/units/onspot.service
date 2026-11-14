@@ -1,0 +1,55 @@
+# proj template (deploy/project.json, runtime.units). The live unit today is deploy/onspot.service (DynamicUser).
+# OnSpot server: REST, SSE and MCP on 127.0.0.1 (docs/protocol.md).
+# Before the first release with this template, copy the live database and its shots folder into the
+# data folder of the channel. Without the file this unit starts on an empty database.
+[Unit]
+Description=OnSpot ({{CHANNEL}}): pin feedback queue
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User={{USER}}
+WorkingDirectory={{DIR}}
+Environment=PORT={{PORT}}
+Environment=PINS_DB={{DATA}}/pins.db
+Environment=PINS_DOWNLOAD_DIR={{DIR}}/extension/dist
+{{ENV}}
+ExecStart={{NODE}}/node --disable-warning=ExperimentalWarning {{DIR}}/server/src/index.js
+Restart=on-failure
+RestartSec=2
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+# Hardening. The server binds 127.0.0.1 and opens no outbound connection.
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+IPAddressDeny=any
+IPAddressAllow=localhost
+UMask=0077
+ReadWritePaths={{DATA}}
+MemoryMax=192M
+
+[Install]
+WantedBy=multi-user.target

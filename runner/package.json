@@ -1,0 +1,13 @@
+{
+  "name": "onspot-runner",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "OnSpot auto-fix runner: starts a fix run for every new pin (docs/protocol.md, Auto-fix runner). No npm dependencies.",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test \"test/*.test.js\""
+  }
+}

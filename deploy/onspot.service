@@ -1,0 +1,49 @@
+# OnSpot server: REST, SSE and MCP on 127.0.0.1:4750 (docs/protocol.md).
+# Install: cp deploy/onspot.service /etc/systemd/system/ && systemctl enable --now onspot
+[Unit]
+Description=OnSpot (pin feedback queue)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/hub/pins
+ExecStart=/opt/studio/bin/node --disable-warning=ExperimentalWarning /srv/hub/pins/server/src/index.js
+Environment=PORT=4750
+Environment=PINS_DB=/var/lib/onspot/pins.db
+Environment=PINS_DOWNLOAD_DIR=/srv/hub/pins/extension/dist
+DynamicUser=yes
+StateDirectory=onspot
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+# Hardening. The server binds 127.0.0.1 and opens no outbound connection.
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+IPAddressDeny=any
+IPAddressAllow=localhost
+UMask=0077
+MemoryMax=192M
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

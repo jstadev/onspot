@@ -1,0 +1,26 @@
+* { box-sizing: border-box; }
+html { background: #f6f5f1; color: #242522; font-family: system-ui, sans-serif; }
+body { margin: 0; }
+header { padding: 24px 6vw; border-bottom: 1px solid #deded5; display: flex; align-items: center; justify-content: space-between; }
+header strong { font-size: 16px; font-weight: 650; letter-spacing: -.3px; }
+button, a { font: inherit; }
+button { cursor: pointer; }
+header button { background: none; border: 1px solid #cdcec5; border-radius: 7px; padding: 8px 12px; color: #45483b; font-size: 13px; }
+main { max-width: 1060px; margin: 0 auto; padding: 52px 32px 64px; }
+.eyebrow { color: #62705c; font-size: 13px; }
+h1 { margin: 14px 0 18px; font-size: 44px; letter-spacing: -1.7px; max-width: 620px; font-weight: 550; line-height: 1.12; }
+.intro { max-width: 530px; color: #626559; line-height: 1.7; margin: 0 0 32px; }
+.details { display: flex; gap: 18px; flex-wrap: wrap; }
+.panel { background: #fffefa; border: 1px solid #dcddd2; border-radius: 12px; padding: 24px; width: 420px; }
+.panel h2 { font-size: 21px; margin: 0 0 12px; letter-spacing: -.5px; }
+.panel p { font-size: 14px; color: #626559; line-height: 1.6; }
+.panel button { background: #354a3d; color: white; border: 1px solid #223c2c; padding: 10px 16px; border-radius: 7px; font-size: 14px; }
+#nested-parent { margin-top: 18px; padding: 16px; border: 1px solid #c8cebd; border-radius: 8px; }
+#nested-child { display: block; padding: 7px; font-size: 14px; }
+.motion { width: 14px; height: 14px; background: #59775d; border-radius: 50%; animation: travel 3s linear infinite alternate; margin: 26px 0; }
+@keyframes travel { to { transform: translateX(140px); } }
+.spacer { height: 800px; }
+.scrollbox { height: 220px; overflow: auto; border: 1px solid #cdd2c7; background: #fff; border-radius: 10px; margin-top: 24px; padding: 18px; }
+.scroll-content { height: 700px; padding-top: 60px; }
+#scroll-target { padding: 12px; border: 2px solid #59775d; font-size: 18px; width: 310px; background: #eef2e9; }
+#shadow-host { margin-top: 24px; }
