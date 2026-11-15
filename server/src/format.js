@@ -42,6 +42,7 @@ export function formatDetail(pin, replies = [], steps = []) {
   if (about.length) lines.push(about.join(" · "));
   if (pin.presets?.length) lines.push(`presets: ${pin.presets.map((preset) => `${text(preset.label)}: ${text(preset.text)}`).join(" · ")}`);
   if (text(pin.quote)) lines.push(`quote: ${quoted(pin.quote)}`);
+  if (pin.images?.length) lines.push(`images: ${pin.images.length} (pins images ${pin.id} saves them)`);
   for (const key of ["agent", "model", "summary", "commit", "run", "batch"]) {
     if (text(pin[key])) lines.push(`${key}: ${text(pin[key])}`);
   }

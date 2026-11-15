@@ -25,7 +25,8 @@ function mount() {
   root.append(live, menu, capsule, tray, toastBox, overlay, outline, hoverLabel, selectionBar);
   // Only his own input counts. A page script can reach an open shadow root and make events there.
   // An event that a script made (`isTrusted` false) stops here, before any of our handlers.
-  for (const type of ['click', 'pointerdown', 'pointerup', 'keydown']) {
+  // `change` is not in this list: the file input checks it itself, and a select uses `change` too.
+  for (const type of ['click', 'pointerdown', 'pointerup', 'keydown', 'paste', 'drop']) {
     root.addEventListener(type, event => {
       if (event.isTrusted) return;
       event.stopImmediatePropagation();

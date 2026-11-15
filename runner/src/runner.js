@@ -9,6 +9,7 @@ import { chooseProfile } from "./profile.js";
 import { readConfig } from "./config.js";
 import { createShots } from "./shots.js";
 import { createPins, API_MS } from "./pins.js";
+import { savePinImages } from "./images.js";
 
 const POLL = 30_000, WATCH = 15_000, HISTORY = 14 * 86_400_000;
 // A pin gets this many runs before a failed run hands it to the Chairman. The second run has a
@@ -268,18 +269,22 @@ export function createRunner({ fetch, clock, triad, resolveProject, buildPrompt,
     const { pin, project, key } = current;
     const choice = chooseModel(runsOf(pin));
     if (pin.revert) {
-      // A go back (item 16): the lean start, the project card, no history and no siblings.
+      // A go back (item 16): the lean start, the project card, no history and no siblings. No images.
       const profile = options.lean ? "pin" : null;
       const facts = await briefOf(pin, project);
       const prompt = buildRevertPrompt({ pin, project, choice, replies, brief: facts, shot: Boolean(shots), lean: profile === "pin" });
       await begin([pin], key, project, choice, `Pin #${pin.id} · Go back: ${pinTitle(pin)} · ${choice.label}`, prompt, profile);
       return;
     }
+    // The images download while the context and the brief run, so a pin with images starts no later
+    // than the brief. The download itself ends within 5 s.
+    const savedP = savePinImages({ pin, fetch, clock, port: options.port, dir: options.imagesDir, log });
     // The lean start, unless the pin needs the full one (runner/src/profile.js).
     const profile = options.lean ? chooseProfile(pin) : null;
     const known = await context(pin);
     const facts = await briefOf(pin, project);
-    const prompt = buildPrompt({ pin, project, choice, replies, ...known, brief: facts, shot: Boolean(shots), lean: profile === "pin" });
+    const saved = await savedP;
+    const prompt = buildPrompt({ pin, project, choice, replies, ...known, brief: facts, shot: Boolean(shots), lean: profile === "pin", saved });
     await begin([pin], key, project, choice, `Pin #${pin.id} · ${pinTitle(pin)} · ${choice.label}`, prompt, profile);
   }
 
@@ -298,9 +303,11 @@ export function createRunner({ fetch, clock, triad, resolveProject, buildPrompt,
     await settings();
     if (!enabled || options.disabled || stopping || !bulk.on) return;
     const { project, key } = group[0];
+    // Every pin's images start now and share this moment's 5 s limit. The briefs stay in order.
+    const savedPs = group.map(({ pin }) => savePinImages({ pin, fetch, clock, port: options.port, dir: options.imagesDir, log }));
     const items = [];
-    for (const { pin, project: own } of group) {
-      items.push({ pin, replies: replies.get(pin.id), history: await history(pin), brief: await briefOf(pin, own) });
+    for (const [index, { pin, project: own }] of group.entries()) {
+      items.push({ pin, replies: replies.get(pin.id), history: await history(pin), brief: await briefOf(pin, own), saved: await savedPs[index] });
     }
     // A prompt over the Triad limit takes fewer pins. The others stay queued for the next bulk run.
     let choice, prompt;

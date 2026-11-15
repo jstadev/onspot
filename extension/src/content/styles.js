@@ -128,7 +128,7 @@ textarea, input, select { display: block; width: 100%; padding: 9px 10px; border
 textarea { resize: vertical; min-height: 68px; max-height: 35dvh; }
 input, select { height: 36px; padding-block: 0; margin-bottom: 6px; }
 textarea::placeholder, input::placeholder { color: var(--muted); }
-.panel-footer { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+.panel-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 10px; }
 .quote { border-left: 2px solid var(--focus); color: var(--muted); padding-left: 9px; margin: 0 0 12px; max-height: 90px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 .error { color: #fca5a5; font-size: 12px; margin: 8px 0 0; overflow-wrap: anywhere; }
 .status { color: var(--focus); font-size: 11px; font-weight: 600; max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -154,6 +154,16 @@ textarea::placeholder, input::placeholder { color: var(--muted); }
 .shot[data-full='true'] { grid-column: 1 / -1; cursor: zoom-out; }
 .shot-name { font-size: 11px; font-weight: 600; color: var(--muted); }
 .shot canvas { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--well); }
+.images { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.images .shot { flex: 1 1 72px; max-width: 120px; }
+.images .shot[data-full='true'] { flex-basis: 100%; max-width: none; }
+.thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.thumb { position: relative; width: 48px; height: 48px; }
+.thumb canvas { display: block; width: 48px; height: 48px; border: 1px solid var(--line); border-radius: 6px; background: var(--well); }
+.thumb[aria-busy='true'] { opacity: .45; }
+.thumb-remove { position: absolute; top: -6px; right: -6px; width: 18px; min-height: 18px; padding: 0; border-radius: 9px; background: var(--surface); }
+.thumb-remove svg { width: 12px; height: 12px; }
+.popup[data-drop='true'], .reply-form[data-drop='true'] { box-shadow: inset 0 0 0 2px var(--focus); }
 .actions { display: flex; flex-wrap: wrap; gap: 3px; border-top: 1px solid var(--line); padding: 7px 9px; }
 .actions button { font-size: 12px; }
 .danger { color: #fca5a5; }

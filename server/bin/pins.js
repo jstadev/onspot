@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearFacts, judge, loadFacts, saveFacts, verdictIntent } from "../src/facts.js";
 import { formatDetail, formatLine, formatList } from "../src/format.js";
 import { ID_RE } from "../src/id.js";
 import { ship } from "../src/ship.js";
-import { SHOT_KINDS, SHOT_MAX, shotType } from "../src/shots.js";
+import { IMAGE_EXT, SHOT_KINDS, SHOT_MAX, shotType } from "../src/shots.js";
 import { snapPin } from "../src/snap.js";
 
 const usage = `Usage:
@@ -23,6 +23,7 @@ const usage = `Usage:
   pins shot <id> before|after <file>
   pins snap <id> before|after [--url U] [--selector S] [--pad 40]
   pins check <id> --url U [--selector S] [--pad 40]
+  pins images <id> [--dir D]
   pins ship <id> --dir <worktree> --summary "..." [--message "..."] <path> [<path> ...]
   pins --help`;
 
@@ -39,6 +40,7 @@ const commands = {
   wait: { count: 0, flags: ["host", "timeout"] },
   progress: { count: 2, flags: [] },
   shot: { count: 3, flags: [] },
+  images: { count: 1, flags: ["dir"] },
   snap: { count: 2, flags: ["url", "selector", "pad"] },
   check: { count: 1, flags: ["url", "selector", "pad"], required: ["url"] },
   // The pin id, then 1 to 50 changed files.
@@ -120,6 +122,26 @@ function saveImage(id, bytes) {
   const file = name(shotType(bytes) === "image/jpeg" ? "jpg" : "png");
   writeFileSync(file, bytes, { flag: "wx", mode: 0o600 });
   return file;
+}
+
+// `pins images` saves the images of a pin as private files, oldest first. An old file goes first, so no symlink is followed.
+async function saveImages(id, dir) {
+  const { pin } = await request(`/pins/${id}`);
+  if (!pin.images?.length) return [];
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const files = [];
+  for (const [index, image] of pin.images.entries()) {
+    const response = await fetch(`${base}/images/${image.id}`, { headers });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `pins server returned HTTP ${response.status}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const type = shotType(bytes);
+    if (!type || bytes.length > SHOT_MAX) throw new Error(`image ${index + 1} of #${id} is not a PNG, JPEG or WebP file of at most 2 MiB`);
+    const file = join(dir, `pins-${id}-${index + 1}.${IMAGE_EXT[type]}`);
+    rmSync(file, { force: true });
+    writeFileSync(file, bytes, { flag: "wx", mode: 0o600 });
+    files.push(file);
+  }
+  return files;
 }
 
 // A done pin whose before and after facts show no change gets a warning. It never blocks the command.
@@ -209,6 +231,11 @@ async function main() {
     if (info.size > SHOT_MAX) throw new Error("the image is larger than 2 MiB");
     await upload(id, body, readFileSync(file));
     console.log(`#${id} ${body}: image saved`);
+    return;
+  }
+  if (command === "images") {
+    const files = await saveImages(id, options.dir ?? tmpdir());
+    console.log(files.length ? files.join("\n") : `#${id} has no images`);
     return;
   }
   if (command === "ship") {

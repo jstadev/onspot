@@ -9,14 +9,15 @@ import { schedule, setError, showFlash, syncWatchers } from './layout.js';
 import { api } from './live.js';
 import { pinButton } from './capsule.js';
 import { closePopup } from './notes.js';
+import { IMAGE_WAIT, attachedReply, attachImages } from './images.js';
 import { acceptPin, markers, markSeen, pins, questions, renderMarkers, revision, revisions, seeIt } from './pins.js';
 import { dropToast } from './toasts.js';
 import { closeLog } from './log.js';
 import { closeSettings } from './settings.js';
 
 export let card = null;
-// Before and after images by pin, kind and upload time.
-const shots = new Map();
+// Shot and pin-image bitmaps. One cache, same as the shots: the oldest leaves at the limit.
+const bitmaps = new Map();
 
 function syncQuestion(instance) {
   const text = instance.pin?.status === 'waiting' ? latestAgentBody(instance.replies) : '';
@@ -28,38 +29,43 @@ function latestAgentBody(replies) {
   for (const item of replies.values()) if (item.kind === 'agent' && (!best || item.id > best.id)) best = item;
   return best?.body || '';
 }
-// One image per pin, kind and upload time. The background sends the bytes; they go into a
-// canvas, so the page never holds an image URL that its CSP could block.
-function loadShot(id, kind, at) {
-  const key = `${id}:${kind}:${at}`;
-  if (!shots.has(key)) {
-    shots.set(key, ext.runtime.sendMessage({ t: MSG.SHOT, id, kind }).then(response => {
-      if (!response?.ok) throw new Error('No image');
+// The background sends the bytes. They go into a canvas, so the page never holds an image URL.
+function loadBitmap(key, message) {
+  if (!bitmaps.has(key)) {
+    bitmaps.set(key, ext.runtime.sendMessage(message).then(response => {
+      if (!response?.ok || typeof response.data !== 'string') throw new Error('No image');
       return createImageBitmap(new Blob([Uint8Array.from(atob(response.data), char => char.charCodeAt(0))], { type: response.type }));
-    }).catch(() => { shots.delete(key); return null; }));
-    if (shots.size > SHOT_CACHE) shots.delete(shots.keys().next().value);
+    }).catch(() => { bitmaps.delete(key); return null; }));
+    if (bitmaps.size > SHOT_CACHE) bitmaps.delete(bitmaps.keys().next().value);
   }
-  return shots.get(key);
+  return bitmaps.get(key);
 }
-function renderShots(instance, pin) {
-  const kinds = SHOT_KINDS.filter(kind => pin.shots?.[kind]);
-  const signature = kinds.map(kind => kind + pin.shots[kind]).join();
-  if (signature === instance.shotSignature) return;
-  instance.shotSignature = signature;
-  instance.shots.hidden = !kinds.length;
-  instance.shots.replaceChildren(...kinds.map(kind => {
-    const name = kind === 'before' ? 'Before' : 'After';
-    const node = button(`Show the ${name} image at full width`, undefined, () => {
-      const full = node.dataset.full !== 'true';
-      for (const item of instance.shots.children) { item.dataset.full = String(full && item === node); item.hidden = full && item !== node; }
-      setTitle(node, full ? 'Show both images side by side' : `Show the ${name} image at full width`);
-      schedule();
-    }, 'shot');
-    node.dataset.kind = kind;
+function zoom(container, node, closeTitle) {
+  const full = node.dataset.full !== 'true';
+  for (const item of container.children) {
+    const on = full && item === node;
+    item.dataset.full = String(on);
+    item.hidden = full && item !== node;
+    setTitle(item, on ? closeTitle : item.dataset.open);
+  }
+  schedule();
+}
+// Shots and attached images share this strip: a click shows one image at the full card width.
+function renderStrip(container, entries, closeTitle) {
+  const signature = entries.map(entry => entry.key).join();
+  if (container.dataset.signature === signature) return;
+  container.dataset.signature = signature;
+  container.hidden = !entries.length;
+  container.replaceChildren(...entries.map(entry => {
+    const node = button(entry.title, undefined, () => zoom(container, node, closeTitle), 'shot');
+    node.dataset.open = entry.title;
+    if (entry.kind) node.dataset.kind = entry.kind;
     const canvas = el('canvas');
-    node.append(el('span', 'shot-name', name), canvas);
-    loadShot(pin.id, kind, pin.shots[kind]).then(bitmap => {
-      if (!bitmap) { node.remove(); return; }
+    if (entry.name) node.append(el('span', 'shot-name', entry.name));
+    node.append(canvas);
+    loadBitmap(entry.key, entry.message).then(bitmap => {
+      if (!node.isConnected) return;
+      if (!bitmap) { node.remove(); if (!container.children.length) container.hidden = true; return; }
       const scale = Math.min(1, SHOT_WIDTH / bitmap.width);
       canvas.width = Math.round(bitmap.width * scale); canvas.height = Math.round(bitmap.height * scale);
       canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
@@ -67,6 +73,34 @@ function renderShots(instance, pin) {
     });
     return node;
   }));
+}
+function renderShots(instance, pin) {
+  const entries = SHOT_KINDS.filter(kind => pin.shots?.[kind]).map(kind => {
+    const name = kind === 'before' ? 'Before' : 'After';
+    return { key: `${pin.id}:${kind}:${pin.shots[kind]}`, message: { t: MSG.SHOT, id: pin.id, kind }, title: `Show the ${name} image at full width`, kind, name };
+  });
+  renderStrip(instance.shots, entries, 'Show both images side by side');
+}
+function imageEntries(images) {
+  return images.map((image, index) => ({ key: `image:${image.id}`, message: { t: MSG.IMAGE, id: image.id }, title: `Show image ${index + 1} at full width` }));
+}
+const pinImages = pin => (Array.isArray(pin?.images) ? pin.images : []).filter(image => image?.id && image.replyId == null);
+function replyImages(pin, reply) {
+  const own = Array.isArray(reply?.images) ? reply.images.filter(image => image?.id) : [];
+  return own.length ? own : (Array.isArray(pin?.images) ? pin.images : []).filter(image => image?.replyId === reply?.id);
+}
+function renderPinImages(instance, pin) {
+  renderStrip(instance.pinImages, imageEntries(pinImages(pin)), 'Show the images in a row');
+}
+function syncReplyStrips(instance) {
+  for (const li of instance.list.children) {
+    const reply = instance.replies.get(Number(li.dataset.id));
+    const images = reply ? replyImages(instance.pin, reply) : [];
+    let strip = [...li.children].find(item => item.classList.contains('images'));
+    if (!images.length) { strip?.remove(); continue; }
+    if (!strip) { strip = el('div', 'images'); li.append(strip); }
+    renderStrip(strip, imageEntries(images), 'Show the images in a row');
+  }
 }
 export function refreshCard(instance, pin) {
   if (card !== instance) return;
@@ -105,6 +139,8 @@ export function refreshCard(instance, pin) {
     }));
   }
   renderShots(instance, pin);
+  renderPinImages(instance, pin);
+  syncReplyStrips(instance);
   const who = [modelName(pin), pin.agent].filter(Boolean).join(' · ');
   instance.agent.textContent = who ? `By ${who}` : ''; instance.agent.hidden = !who || pin.status === 'queued';
   instance.summary.textContent = pin.summary || ''; instance.summary.hidden = !pin.summary;
@@ -143,8 +179,10 @@ export function appendReply(instance, reply) {
       const time = el('time', '', date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
       time.dateTime = item.createdAt; time.title = date.toLocaleString(); meta.append(time);
     }
+    li.dataset.id = String(item.id);
     li.append(meta, el('p', 'reply-body', item.body)); instance.list.append(li);
   }
+  syncReplyStrips(instance);
   syncQuestion(instance);
   schedule();
 }
@@ -231,6 +269,7 @@ export async function openCard(id, scroll = false) {
   for (const node of [instance.status, instance.accepted, instance.tag]) instance.head.insertBefore(node, instance.close);
   const body = el('div', 'panel-body');
   instance.note = el('p', 'note');
+  instance.pinImages = el('div', 'images'); instance.pinImages.hidden = true;
   instance.question = el('p', 'question'); instance.question.hidden = true;
   instance.tags = el('div', 'tags'); instance.tags.hidden = true;
   instance.quote = el('blockquote', 'quote'); instance.quote.hidden = true;
@@ -265,23 +304,30 @@ export async function openCard(id, scroll = false) {
   instance.reply = textarea('pin-reply', 'Add a reply…');
   instance.error = errorNode('onspot-card-error');
   instance.reply.setAttribute('aria-describedby', instance.error.id);
+  instance.replyForm = el('div', 'reply-form');
+  instance.images = attachImages({ host: instance.replyForm, box: instance.reply, error: instance.error, kind: 'reply' });
   const sendReply = async () => {
-    const text = instance.reply.value.trim();
+    if (instance.images.busy()) { setError(instance.error, IMAGE_WAIT); return; }
+    const images = instance.images.ids();
+    const text = instance.reply.value.trim() || (images.length ? attachedReply(images.length) : '');
     if (!text) { setError(instance.error, instance.wrongOpen ? 'Write what is still wrong.' : 'Add a reply before sending.'); instance.reply.focus(); return; }
     const reopen = instance.wrongOpen;
-    if (await cardAction(instance, 'POST', '/replies', reopen ? { body: text, reopen: true } : { body: text }) && reopen) {
-      instance.wrongOpen = false;
-      announce(`Pin ${instance.id} goes back for another fix.`);
-      if (instance.pin) refreshCard(instance, instance.pin);
+    const payload = { body: text, ...(images.length ? { images } : {}), ...(reopen ? { reopen: true } : {}) };
+    if (await cardAction(instance, 'POST', '/replies', payload)) {
+      instance.images.clear();
+      if (reopen) {
+        instance.wrongOpen = false;
+        announce(`Pin ${instance.id} goes back for another fix.`);
+        if (instance.pin) refreshCard(instance, instance.pin);
+      }
     }
   };
   instance.reply.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendReply(); } });
-  instance.replyForm = el('div', 'reply-form');
   const footer = el('div', 'panel-footer');
   instance.sendReply = button('Send your reply', 'Reply', sendReply, 'primary');
-  footer.append(instance.sendReply);
-  instance.replyForm.append(instance.reply, footer);
-  body.append(instance.note, instance.question, instance.editor, instance.tags, instance.quote, instance.target, instance.run, instance.summary, instance.agent, instance.commit, instance.shots, instance.list, instance.replyForm, instance.error);
+  footer.append(instance.images.button, instance.sendReply);
+  instance.replyForm.append(instance.reply, instance.images.node, footer);
+  body.append(instance.note, instance.pinImages, instance.question, instance.editor, instance.tags, instance.quote, instance.target, instance.run, instance.summary, instance.agent, instance.commit, instance.shots, instance.list, instance.replyForm, instance.error);
   const actions = el('div', 'actions');
   instance.see = button('Reload the page and show the change', 'See it', () => { if (instance.pin) seeIt(instance.pin); }, 'primary');
   // Looks good tells the server he accepts the result, then marks the pin seen, also when the call fails.

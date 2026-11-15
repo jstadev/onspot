@@ -20,8 +20,8 @@ Node 22 (`/opt/studio/bin/node`; `node:sqlite` needs 22.13 or later). The server
 export PATH=/opt/studio/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 unset NODE_ENV   # with NODE_ENV=production npm skips esbuild
 npm --prefix extension ci && npm --prefix extension run build   # release.build (writes extension/dist and the two ZIPs)
-npm test                                                        # release.test: server 166, runner 143, extension 84, e2e helpers 12
-npm run harness                                                 # extension UI harness: 59 groups in Chromium, 59 in Firefox
+npm test                                                        # release.test: server 176, runner 150, extension 91, e2e helpers 12
+npm run harness                                                 # extension UI harness: 60 groups in Chromium, 60 in Firefox
 node deploy/caddy.check.mjs                                     # the proxy rules with a real Caddy
 ```
 

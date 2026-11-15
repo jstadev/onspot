@@ -112,6 +112,7 @@ Every environment variable that the code reads. `.env.example` holds the same na
 | `PORT` | server | `4750` | Port on `127.0.0.1`. An integer from 0 to 65535; 0 takes a free port. |
 | `PINS_DB` | server | `<repo>/data/pins.db` | The SQLite file. The server creates the folder and migrates the schema on open. |
 | `PINS_SHOTS_DIR` | server | `shots` next to the database | Folder for the before and after images. |
+| `PINS_IMAGES_DIR` | server | `images` next to the database | Folder for the images that you attach to pins and replies. |
 | `PINS_DOWNLOAD_DIR` | server | `<repo>/extension/dist` | Folder with the two extension ZIPs that `/download/` serves. |
 | `PINS_ROOT_DOMAIN` | server | `koglabs.com` | A pin URL must be on this domain or a subdomain. |
 | `PINS_QUEUE_URL` | server | `https://ai.koglabs.com/triad?tab=pins` | Where `GET /` redirects (the queue UI). A bad value stops the start. |
@@ -129,6 +130,7 @@ Every environment variable that the code reads. `.env.example` holds the same na
 | `PINS_RUNNER_BRIEF` | runner | on | `0` switches the brief off. Only `0` and `1` are valid. |
 | `PINS_RUNNER_SHOTS` | runner | on | `0` switches the "before" shot by the runner off. Only `0` and `1` are valid. |
 | `PINS_RUNNER_LEAN` | runner | on | `0` switches the lean session start off. Only `0` and `1` are valid. |
+| `PINS_RUNNER_IMAGES_DIR` | runner | `/var/lib/onspot-runner/images` | Where the runner saves the images of a pin for its session. |
 | `MAX_RUNS` | runner | `0` | Runs at the same time. 0 is no limit. |
 | `MAX_RUNS_PER_PROJECT` | runner | `0` | Runs at the same time for one project. 0 is no limit. |
 | `MAX_RUNS_PER_DAY` | runner | `0` | Runs per UTC day. 0 is no limit. |
@@ -173,9 +175,9 @@ To report a problem, read [`SECURITY.md`](SECURITY.md).
 
 ```sh
 npm --prefix extension ci    # one time: the extension tests run the build
-npm test                     # server 166, runner 143, extension 84, e2e helpers 12 tests
+npm test                     # server 176, runner 150, extension 91, e2e helpers 12 tests
 node deploy/caddy.check.mjs  # the proxy rules against a real Caddy (needs the caddy binary)
-npm run harness              # the extension UI: 59 groups in Chromium and 59 in Firefox
+npm run harness              # the extension UI: 60 groups in Chromium and 60 in Firefox
 ```
 
 - The tests use an in-memory store, ports that the system picks and temp folders. They send nothing to a running server.

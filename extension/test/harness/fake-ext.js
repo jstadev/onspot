@@ -1,12 +1,29 @@
-import { API_METHODS, API_PATH_RE, MSG, PIN_ID_RE, PORT_NAME, SETTINGS_METHODS, SHOT_KINDS, STATE } from '../../src/shared/protocol.js';
+import { API_METHODS, API_PATH_RE, IMAGE_ID_RE, IMAGES_MAX, MSG, PIN_ID_RE, PORT_NAME, SETTINGS_METHODS, SHOT_KINDS, SHOT_TYPES, STATE } from '../../src/shared/protocol.js';
 
 /* global __ONSPOT_VERSION__, __SHOTS__ */
+// Playwright sets the chosen files and then fires `change` with isTrusted false. A real pick is
+// trusted. The product ignores the untrusted event. This page is the harness, so a change on a
+// file input is reported as trusted and the product handler runs. No other event is changed.
+const nativeAddEventListener = EventTarget.prototype.addEventListener;
+EventTarget.prototype.addEventListener = function (type, listener, options) {
+  if (type !== 'change' || typeof listener !== 'function') return nativeAddEventListener.call(this, type, listener, options);
+  return nativeAddEventListener.call(this, type, function (event) {
+    if (event.isTrusted || event.target?.type !== 'file') return listener.call(this, event);
+    const proxy = new Proxy(event, { get(obj, key) {
+      if (key === 'isTrusted') return true;
+      const value = Reflect.get(obj, key, obj);
+      return typeof value === 'function' ? value.bind(obj) : value;
+    } });
+    return listener.call(this, proxy);
+  }, options);
+};
 const INTENTS = ['text', 'style', 'layout', 'behaviour', 'remove', 'task'], SCOPES = ['element', 'similar', 'page', 'site'];
 
 const listeners = new Set(), ports = new Set();
 const persisted = JSON.parse(localStorage.getItem('onspot-harness-db') || 'null');
 const defaultSettings = () => ({ autofix: true, bulk: { on: false, delegate: false, agents: 3 } });
-const db = persisted || { pins: [], replies: [], steps: [], batches: [], nextPin: 1, nextReply: 1, nextStep: 1, nextBatch: 1, settings: defaultSettings() };
+const db = persisted || { pins: [], replies: [], steps: [], batches: [], images: [], nextPin: 1, nextReply: 1, nextStep: 1, nextBatch: 1, settings: defaultSettings() };
+if (!Array.isArray(db.images)) db.images = [];
 const calls = [], portMessages = [], failures = [], answers = [], storageListeners = new Set();
 let lostResponses = 0;
 let connections = 0;
@@ -42,17 +59,48 @@ function validateCreate(body) {
   }
   return url;
 }
+function newImageId() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+function publicImage(image) {
+  return { id: image.id, type: image.type, size: image.size, replyId: image.replyId, author: image.author, createdAt: image.createdAt };
+}
+// Ids of images that still wait for a pin. An unknown or already linked id is the same error as the store.
+function takeImages(ids) {
+  if (ids === undefined) return [];
+  if (!Array.isArray(ids) || ids.length > IMAGES_MAX || new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !IMAGE_ID_RE.test(id))) throw new Error('Invalid images');
+  const records = [];
+  for (const id of ids) {
+    const image = db.images.find(item => item.id === id);
+    if (!image || image.pinId) throw new Error(`image ${id.slice(0, 6)} is gone; remove it and try again`);
+    records.push(image);
+  }
+  return records;
+}
+function linkImages(pin, records, replyId) {
+  if (!Array.isArray(pin.images)) pin.images = [];
+  const meta = [];
+  for (const image of records) {
+    image.pinId = pin.id; image.replyId = replyId;
+    const item = publicImage(image);
+    pin.images.push(item); meta.push(item);
+  }
+  return meta;
+}
 function create(body, batch = null) {
   const url = validateCreate(body);
+  const records = takeImages(body.images);
   url.hash = '';
   const pin = {
     id: db.nextPin++, status: 'queued', url: url.href, host: url.host.toLowerCase(), path: url.pathname,
     title: (body.title || '').slice(0, 300), note: body.note.trim(), quote: body.quote?.slice(0, 2000) || null,
     targets: copy(body.targets), viewport: body.viewport || null, author: 'tester', agent: null,
     summary: null, commit: null, run: null, batch, model: null, attempts: 0, acceptedAt: null, reopens: 0, versions: [], revert: null, revertedAt: null,
-    intent: body.intent ?? null, scope: body.scope ?? null, presets: copy(body.presets ?? []), progress: null, shots: { before: null, after: null }, replyCount: 0, createdAt: now(), updatedAt: now(), startedAt: null, closedAt: null,
+    intent: body.intent ?? null, scope: body.scope ?? null, presets: copy(body.presets ?? []), progress: null, shots: { before: null, after: null }, images: [], replyCount: 0, createdAt: now(), updatedAt: now(), startedAt: null, closedAt: null,
   };
-  db.pins.push(pin); save(); return pin;
+  db.pins.push(pin); linkImages(pin, records, null); save(); return pin;
 }
 function createBatch(body) {
   if (!Array.isArray(body?.pins) || body.pins.length < 1 || body.pins.length > 30) throw new Error('pins must hold 1 to 30 pins');
@@ -131,8 +179,12 @@ function handle({ method, path, body }) {
   if (method !== 'POST') return failure('Method not allowed', 405);
   if (action === 'replies') {
     if (body?.reopen !== undefined && typeof body.reopen !== 'boolean') return failure('reopen must be true or false');
+    const records = takeImages(body?.images);
+    if (!Array.isArray(pin.images)) pin.images = [];
+    if (pin.images.length + records.length > 12) return failure('a pin holds at most 12 images', 409);
     const reopen = pin.status === 'waiting' || (body?.reopen === true && ['done', 'dismissed'].includes(pin.status));
     const item = reply(pin, body?.body);
+    item.images = linkImages(pin, records, item.id);
     if (reopen) reopenPin(pin);
     save();
     return success({ reply: copy(item), pin: copy(pin) }, 201);
@@ -175,6 +227,18 @@ function answer(message) {
     if (!PIN_ID_RE.test(String(message.id)) || !SHOT_KINDS.includes(message.kind)) return { ok: false, status: 400 };
     const pin = db.pins.find(item => item.id === Number(message.id));
     return pin?.shots[message.kind] ? { ok: true, status: 200, type: 'image/png', data: __SHOTS__[message.kind] } : { ok: false, status: 404 };
+  }
+  if (message.t === MSG.UPLOAD) {
+    if (!SHOT_TYPES.includes(message.type) || typeof message.data !== 'string' || !message.data) return { ok: false, status: 400, data: null };
+    const pad = message.data.endsWith('==') ? 2 : message.data.endsWith('=') ? 1 : 0;
+    const image = { id: newImageId(), type: message.type, data: message.data, size: Math.floor(message.data.length * 3 / 4) - pad, replyId: null, pinId: null, author: 'tester', createdAt: now() };
+    db.images.push(image); save();
+    return { ok: true, status: 201, data: { image: publicImage(image) } };
+  }
+  if (message.t === MSG.IMAGE) {
+    if (typeof message.id !== 'string' || !IMAGE_ID_RE.test(message.id)) return { ok: false, status: 400 };
+    const image = db.images.find(item => item.id === message.id);
+    return image ? { ok: true, status: 200, type: image.type, data: image.data } : { ok: false, status: 404 };
   }
   if (message.t !== MSG.API) return failure('Unknown message');
   const failed = failures.findIndex(item => item.method === message.method && item.path === message.path);
@@ -221,7 +285,7 @@ globalThis.__fake = {
   shot(id, kind) { const pin = db.pins.find(item => item.id === id); __fake.update(id, { shots: { ...pin.shots, [kind]: now() } }); },
   disconnect() { for (const port of [...ports]) port.disconnect(); },
   seed(body) { return copy(create(body)); },
-  reset() { db.pins = []; db.replies = []; db.steps = []; db.batches = []; db.nextPin = 1; db.nextReply = 1; db.nextStep = 1; db.nextBatch = 1; db.settings = defaultSettings(); save(); },
+  reset() { db.pins = []; db.replies = []; db.steps = []; db.batches = []; db.images = []; db.nextPin = 1; db.nextReply = 1; db.nextStep = 1; db.nextBatch = 1; db.settings = defaultSettings(); save(); },
   storage: () => JSON.parse(localStorage.getItem('onspot-harness-storage') || '{}'),
   setStorage(values) {
     const all = JSON.parse(localStorage.getItem('onspot-harness-storage') || '{}');

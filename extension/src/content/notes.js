@@ -11,6 +11,7 @@ import { pageURL } from './routes.js';
 import { pinButton } from './capsule.js';
 import { clearSelection, mode, selected, selectionBar } from './picker.js';
 import { addDraft, drafts, removeDraft, saveDrafts, submitAll } from './drafts.js';
+import { IMAGE_WAIT, attachedReply, attachImages } from './images.js';
 import { renderAll } from './pins.js';
 import { closeSettings } from './settings.js';
 import { closeCard } from './card.js';
@@ -58,6 +59,7 @@ export function openPopup({ quote = '', draft = null } = {}) {
   if (instance.quote) instance.body.append(el('blockquote', 'quote', instance.quote));
   if (edit) instance.input.value = draft.body.note;
   instance.error = errorNode('onspot-note-error');
+  instance.images = attachImages({ host: instance.panel, box: instance.input, error: instance.error, kind: 'pin', ids: edit ? draft.body.images : undefined });
   instance.input.setAttribute('aria-describedby', instance.error.id);
   instance.input.addEventListener('input', () => { instance.touched = true; saveText(instance); setError(instance.error); instance.input.removeAttribute('aria-invalid'); });
   instance.input.addEventListener('keydown', event => {
@@ -66,8 +68,8 @@ export function openPopup({ quote = '', draft = null } = {}) {
   const footer = el('div', 'panel-footer');
   footer.append(el('span', 'hint', `↵ ${edit ? 'save' : 'add'} · ${SUBMIT_KEYS} submit all`));
   if (edit) footer.append(button('Discard this unsent pin', 'Discard', () => { removeDraft(draft.id); closePopup(); }, 'danger'));
-  footer.append(button(edit ? 'Save this unsent pin' : 'Add this pin to the batch', edit ? 'Save' : 'Add pin', () => savePopup(instance, false), 'primary'));
-  instance.body.append(instance.input, instance.error, footer);
+  footer.append(instance.images.button, button(edit ? 'Save this unsent pin' : 'Add this pin to the batch', edit ? 'Save' : 'Add pin', () => savePopup(instance, false), 'primary'));
+  instance.body.append(instance.input, instance.images.node, instance.error, footer);
   instance.panel.append(instance.body);
   popup = instance;
   selectionBar.hidden = true;
@@ -94,8 +96,10 @@ export function closePopup(restoreFocus = true, save = true) {
 }
 function savePopup(instance, thenSubmit) {
   if (popup !== instance) return;
-  // With the Remove tab the note may be empty.
-  const note = instance.input.value.trim() || (instance.intent === 'remove' ? 'Remove this element.' : '');
+  if (instance.images.busy()) { setError(instance.error, IMAGE_WAIT); return; }
+  // With the Remove tab, or with images, the note may be empty.
+  const images = instance.images.ids();
+  const note = instance.input.value.trim() || (instance.intent === 'remove' ? 'Remove this element.' : images.length ? attachedReply(images.length) : '');
   const picks = { intent: instance.intent, scope: instance.scope, presets: instance.presets };
   if (!note) {
     // An empty note with ⌘↵ submits the pins that are already there.
@@ -105,7 +109,11 @@ function savePopup(instance, thenSubmit) {
   }
   if (instance.edit) {
     const draft = drafts.items.find(item => item.id === instance.draft.id);
-    if (draft) { draft.body = { ...draft.body, note, ...picks }; saveDrafts(); }
+    if (draft) {
+      draft.body = { ...draft.body, note, ...picks };
+      if (images.length) draft.body.images = images; else delete draft.body.images;
+      saveDrafts();
+    }
     closePopup();
     announce('Unsent pin saved.');
   } else {
@@ -116,6 +124,7 @@ function savePopup(instance, thenSubmit) {
     addDraft({
       url: instance.url, title: document.title.slice(0, 300), note, quote: instance.quote, targets,
       viewport: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio, scrollX, scrollY }, ...picks,
+      ...(images.length ? { images } : {}),
     });
     store({ [textKey(instance.url)]: '' }).catch(() => {});
     closePopup(false, false);

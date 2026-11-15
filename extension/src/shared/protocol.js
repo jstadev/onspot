@@ -18,16 +18,22 @@ export const API_PATH_RE = /^\/api\/(health|stats|batches|settings|pins(\/[1-9][
 export const API_METHODS = ["GET", "POST", "PATCH", "DELETE"];
 export const SETTINGS_METHODS = ["GET", "PATCH"];
 
-// Before/after images of a run: fetched by the background script, drawn by the content script.
+// Before/after images of a run, and images he attaches to a pin or a reply. The background
+// script fetches the bytes. The content script draws them into a canvas.
 export const PIN_ID_RE = /^[1-9][0-9]{0,11}$/;
 export const SHOT_KINDS = ["before", "after"];
 export const SHOT_TYPES = ["image/png", "image/jpeg", "image/webp"];
 export const SHOT_MAX = 2 * 1024 * 1024;
+// 16 random bytes as base64url. Not guessable. A pin or a reply takes at most this many.
+export const IMAGE_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+export const IMAGES_MAX = 6;
 
 export const MSG = {
-  API: "api", // content -> bg, one-shot
+  API: "api", // content -> bg, one-shot. JSON only: it does not carry /api/images.
   STATE: "state", // content -> bg one-shot ({ state } back); bg -> content on the port
   SHOT: "shot", // content -> bg, one-shot: { id, kind } -> { ok, status, type, data (base64) }
+  UPLOAD: "upload", // content -> bg, one-shot: { type, data (base64) } -> { ok, status, data: { image } | null, error? }
+  IMAGE: "image", // content -> bg, one-shot: { id } -> { ok, status, type, data (base64) }
   SUB: "sub", // content -> bg on the port
   PING: "ping", // content -> bg on the port
   PIN: "pin", // bg -> content: { action, pin }

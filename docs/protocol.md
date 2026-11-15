@@ -1,4 +1,4 @@
-# OnSpot: contract v3.5
+# OnSpot: contract v3.6
 
 OnSpot puts feedback pins on any `koglabs.com` page. A pin names an element and holds a
 note. Agents read the queue, take a pin, fix it, and resolve it with the commit. This file is
@@ -44,6 +44,13 @@ revert run (`POST /api/pins/:id/revert { commit }`, users only). He chooses the 
 after an earlier fix. The runner starts one session that undoes the chosen commits, newest first, ships the
 old version and closes the pin. Extension 0.6.0 has the Go back button and the version choice in the card.
 
+v3.6 (2026-11-15, order of the Chairman: *"add photo copy/paste or upload support on pins"*): he pastes, drops or
+picks **images** while he writes a pin note or a reply. Each image uploads at once (`POST /api/images`) and waits on
+the server unlinked; the pin or the reply links it in the same transaction that creates it, so the session sees it
+from its start. The pin JSON has `images`. The runner saves the images of a pin as files and lists them in the prompt,
+so the session opens them with the Read tool. `pins images <id>` saves them for any agent. Extension 0.7.0 has the
+attach control in the note popup and the reply box, and image strips in the card.
+
 2026-11-12 (order of the Chairman, on the model limit of Triad: *"remove it now from everywhere"*):
 Triad accepts every model name (triad #46), so a pin that names Fable or Haiku runs its session on
 that model. The detour through an Opus session and `maestro session` (`delegateTo`) is gone.
@@ -56,7 +63,7 @@ that model. The detour through an Opus session and `maestro session` (`delegateT
 | HTTP server | `server/src/app.js`, `http.js`, `api.js`, `events.js`, `static.js`, `index.js` | REST, SSE, extension downloads, guards. |
 | Agent tools | `server/src/mcp.js`, `format.js`, `server/bin/pins.js` | MCP endpoint and the `pins` CLI. |
 | Queue | repo `jstadev/triad`, `public/console-ui/pins.js` | The Pins tab in the Triad console: `https://ai.koglabs.com/agents?tab=pins` (the hub serves the console at `/agents`; `/triad` redirects there). It calls `/pins/api/*` same-origin with the hub SSO cookie. |
-| Extension UI | `extension/src/content/` | Toolbar, picker, popup, markers, threads, shortcuts. Runs on every page. `index.js` (mount), `dom.js`, `env.js`, the pure modules `prefs.js`, `shortcuts.js`, `format.js`, and one module per part (`capsule`, `keys`, `picker`, `notes`, `drafts`, `pins`, `toasts`, `log`, `settings`, `settings-keys`, `settings-bulk`, `card`, `layout`, `local`, `live`, `routes`, `freeze`, `target`, `styles`). |
+| Extension UI | `extension/src/content/` | Toolbar, picker, popup, markers, threads, shortcuts. Runs on every page. `index.js` (mount), `dom.js`, `env.js`, the pure modules `prefs.js`, `shortcuts.js`, `format.js`, and one module per part (`capsule`, `keys`, `picker`, `notes`, `images`, `drafts`, `pins`, `toasts`, `log`, `settings`, `settings-keys`, `settings-bulk`, `card`, `layout`, `local`, `live`, `routes`, `freeze`, `target`, `styles`). |
 | Extension platform | `extension/src/background.js`, `extension/src/bg/`, `extension/manifest/`, `extension/build.mjs` | Network, live stream, commands, manifests, build. |
 | Shared constants | `extension/src/shared/protocol.js` | Endpoint URLs and message names. Done. |
 | Deploy and tests | `deploy/`, `e2e/` | systemd unit, Caddy snippet, browser tests. `e2e/run.mjs` and `e2e/autofix.mjs` start each test note with a run tag. At the end, on Ctrl+C, on a kill signal and on an error, one cleanup (`endRun` in `e2e/lib.mjs`) closes every browser of the run first, also one that still starts, then deletes every pin with that tag; `run.mjs` then puts auto-fix back. A second signal or error during the cleanup waits for the same cleanup. `e2e/lib.test.mjs` tests this against a fake server and a fake browser. Env: `PINS_PORT`, `PLAYWRIGHT_CORE`, `E2E_IDLE_MS`, `BRAVE_PATH`, `E2E_LOGIN` (the login module of the deployment, not in this repo; default `~/.config/onspot/e2e-login.mjs`; it exports `user` and `cookie(apiOrigin)`). |
@@ -98,6 +105,7 @@ The extension has one dev dependency, `esbuild`. Do not add dependencies.
   "versions": [{ "commit": "a1b2c3d4e5f6", "summary": "Title margin 48px to 24px", "at": "2026-10-17T14:05:00.000Z" }],
   "revert": null,
   "revertedAt": null,
+  "images": [{ "id": "k3J9pQ2xL0aZ7vB1nM4cRw", "type": "image/png", "size": 183204, "replyId": null, "author": "sam", "createdAt": "2026-10-17T14:00:00.000Z" }],
   "replyCount": 0,
   "createdAt": "2026-10-17T14:00:00.000Z",
   "updatedAt": "2026-10-17T14:00:00.000Z",
@@ -147,6 +155,8 @@ The extension has one dev dependency, `esbuild`. Do not add dependencies.
   pin at the request, so `attempts` minus this value is the number of revert runs.
 - `revertedAt` (v3.5) is the time when the latest revert run closed the pin, else `null`. A requeue
   clears it, so a `done` pin with `revertedAt` shows the result of a go back.
+- `images` (v3.6) holds the images that came with the pin or its replies, oldest first, `[]` when none: see
+  "Image". Every transition keeps them (unlike shots). A pin holds at most 12 images.
 - `url` has no fragment. `host` is `URL.host` in lower case. `path` is `URL.pathname`.
 - `targets` holds 1 to 10 elements. The first one is the primary element.
 - `quote` is the text the user selected on the page, or `null`.
@@ -181,6 +191,19 @@ The extension has one dev dependency, `esbuild`. Do not add dependencies.
   rounding (`dpr`: two decimals); a `rect` with another number is dropped whole, a `viewport` key
   with another number is dropped. A `styles` key that is a name of `Object.prototype`
   (`constructor`) is dropped.
+
+### Image (v3.6)
+
+```json
+{ "id": "k3J9pQ2xL0aZ7vB1nM4cRw", "type": "image/png", "size": 183204, "replyId": null, "author": "sam", "createdAt": "..." }
+```
+
+- `id`: 16 random bytes as base64url, 22 characters (`^[A-Za-z0-9_-]{22}$`). It cannot be guessed.
+- `type`: `image/png`, `image/jpeg` or `image/webp`; `size` in bytes.
+- `replyId`: the reply that carried the image, or `null` when it came with the pin.
+- `author`: the actor that uploaded it.
+- An image is **unlinked** from its upload until a new pin (`images` in the pin input) or a new reply (`images` in
+  the reply body) links it, in the same transaction as the insert. A linked image never moves.
 
 ### Reply
 
@@ -258,13 +281,20 @@ Any other change is a conflict (HTTP 409).
 - A shot: `image/png`, `image/jpeg` or `image/webp`, at most 2 MiB, and the first bytes must match
   the type (PNG `89 50 4E 47`, JPEG `FF D8 FF`, WebP `RIFF....WEBP`). Shot files of pins closed more
   than 30 days ago, or of deleted pins, are removed at server start and every 24 h.
+- An image (v3.6): the same types, size and magic rule as a shot. `images` in a pin input or a reply: an array
+  of 0 to 6 image ids, no duplicates, else 400. Each id must be an unlinked image, else 400 `image <first 6
+  characters> is gone; remove it and try again`, and nothing is written (also for a whole batch). A reply that
+  would take the pin over 12 images is 409. At most 200 unlinked images wait on the server; the next upload is
+  409 `too many images wait for a pin`. The prune at server start and every 24 h removes the images of pins
+  closed more than 30 days ago (they leave the pin JSON too), the files of deleted pins and unlinked images
+  older than 30 days. Files `<image id>` (mode 0600) in `PINS_IMAGES_DIR`.
 
 ## Store API (`server/src/store.js`)
 
 ```js
 import { openStore, parseStatuses, ValidationError, ConflictError } from "./store.js";
-const store = openStore({ file: "/path/pins.db", rootDomain: "koglabs.com" }); // file ":memory:" for tests
-store.createPin({ url, title, note, quote, targets, viewport, author })  // -> Pin, throws ValidationError
+const store = openStore({ file: "/path/pins.db", rootDomain: "koglabs.com", shotsDir, imagesDir }); // file ":memory:" for tests
+store.createPin({ url, title, note, quote, targets, viewport, author, images })  // -> Pin, throws ValidationError
 store.createBatch({ pins: [input], key, author }) // -> { batch: { id, host, author, createdAt, count }, pins, created }
                                                 //    one transaction; a known key returns its batch (created: false)
 store.getPin(id)                                // -> Pin | null
@@ -275,12 +305,15 @@ store.listSteps(id)                             // -> Step[] oldest first
 store.setShot(id, kind, { type, bytes })        // -> Pin | null; kind "before"|"after"; ValidationError on type, size or magic bytes
 store.getShot(id, kind)                         // -> { type, bytes } | null
 store.pruneShots({ olderThanDays: 30 })         // -> number of files removed
+store.addImage({ type, bytes, author })         // -> Image (unlinked); ValidationError on type, size or magic bytes; ConflictError at 200 unlinked
+store.getImage(imageId)                         // -> { type, bytes } | null
+store.pruneImages({ olderThanDays: 30 })        // -> number of files removed
 store.updateNote(id, note)                      // -> Pin | null
 store.transition(id, "start"|"resolve"|"dismiss"|"ask"|"reopen"|"accept"|"revert", { agent, summary, commit, reason, question, run, model, kind, author }) // -> Pin | null, throws ConflictError / ValidationError / ForbiddenError
                                                 //    kind "user"|"agent" decides the reopens count and the accept and revert guards
                                                 //    revert: commit = the first fix to undo (it and every later fix)
 store.deletePin(id)                             // -> boolean
-store.addReply(id, { kind, author, body, reopen }) // -> Reply | null
+store.addReply(id, { kind, author, body, reopen, images }) // -> Reply | null; images linked with replyId = the reply
 store.listReplies(id)                           // -> Reply[] oldest first
 store.stats()                                   // -> { total: {queued, working, waiting, done, dismissed}, hosts: [{ host, queued, working, waiting, done, dismissed }] }
 store.getSettings()                             // -> Settings (see "Settings"; defaults when unset)
@@ -310,6 +343,8 @@ Every browser request passes the hub SSO (admin) in Caddy first. Caddy adds `X-S
    body, a body of at most 64 KiB (512 KiB for `POST /api/batches`, 1 MiB for `POST /mcp`) (413), and valid JSON (400).
    The one exception is `PUT /api/pins/:id/shots/:kind`: raw image bytes (see Limits), at most
    2 MiB (413), loopback only (a request with `X-Forwarded-For` gets 403), agents only (403).
+   The second exception (v3.6) is `POST /api/images`: raw image bytes with `Content-Type` `image/png`,
+   `image/jpeg` or `image/webp` (else 415), at most 2 MiB (413), from users (through the proxy) and agents.
 6. Writes share one token bucket: 120 per minute, then 429 with `Retry-After`. A JSON-RPC batch on
    `/mcp` takes one token per entry; a batch with more than 120 entries gets 400 with JSON-RPC
    error -32600 and runs nothing.
@@ -331,13 +366,15 @@ Every browser request passes the hub SSO (admin) in Caddy first. Caddy adds `X-S
 |---|---|---|---|
 | GET | `/api/health` | | 200 `{ ok: true, version, extension, open: { queued, working, waiting } }` (`extension` = version of the builds in `/download/`) |
 | GET | `/api/pins` | query: `status` (`open` default, `all`, or a comma list), `host`, `path`, `q`, `limit` (1-500, default 200), `before` (id), `batch` (id), `selector` (exact `targets[0].selector`, at most 500 chars) | 200 `{ pins: [Pin] }` newest first |
-| POST | `/api/batches` | `{ key?, pins: [{ url, title?, note, quote?, targets, viewport?, intent?, scope?, presets? }] }` | 201 `{ batch, pins }`; 200 with the first batch when `key` is known |
+| POST | `/api/batches` | `{ key?, pins: [{ url, title?, note, quote?, targets, viewport?, intent?, scope?, presets?, images? }] }` | 201 `{ batch, pins }`; 200 with the first batch when `key` is known |
 | GET | `/api/stats` | | 200 `store.stats()` |
 | GET | `/api/pins/:id` | | 200 `{ pin, replies: [Reply], steps: [Step] }` |
-| POST | `/api/pins` | `{ url, title?, note, quote?, targets, viewport?, intent?, scope?, presets? }` | 201 `{ pin }` |
+| POST | `/api/pins` | `{ url, title?, note, quote?, targets, viewport?, intent?, scope?, presets?, images? }` | 201 `{ pin }` |
 | POST | `/api/pins/:id/progress` | `{ text }` (agents only, else 403; pin `working`, else 409) | 201 `{ step, pin }` |
 | PUT | `/api/pins/:id/shots/:kind` | raw image, `kind` = `before` or `after` (agents only, loopback only) | 200 `{ pin }` |
 | GET | `/api/pins/:id/shots/:kind` | | 200 the image with its type, `Cache-Control: private, no-cache`, `Content-Security-Policy: default-src 'none'`; 404 when none |
+| POST | `/api/images` | raw image (v3.6; see Guards 5 and Limits) | 201 `{ image }` (unlinked) |
+| GET | `/api/images/:imageId` | | 200 the image, the headers of the shot GET; 404 when unknown or when `:imageId` is not an image id |
 | PATCH | `/api/pins/:id` | `{ note }` | 200 `{ pin }` |
 | DELETE | `/api/pins/:id` | | 204 |
 | POST | `/api/pins/:id/start` | `{ run?, model? }` | 200 `{ pin }` |
@@ -347,7 +384,7 @@ Every browser request passes the hub SSO (admin) in Caddy first. Caddy adds `X-S
 | POST | `/api/pins/:id/reopen` | `{}` | 200 `{ pin }` |
 | POST | `/api/pins/:id/accept` | `{}` (users only, else 403; pin `done`, else 409) | 200 `{ pin }` |
 | POST | `/api/pins/:id/revert` | `{ commit }` (users only, else 403; pin `done` or `dismissed` and `commit` in `versions`, else 409) | 200 `{ pin }` |
-| POST | `/api/pins/:id/replies` | `{ body, reopen? }` | 201 `{ reply, pin }` |
+| POST | `/api/pins/:id/replies` | `{ body, reopen?, images? }` | 201 `{ reply, pin }` |
 | GET | `/api/settings` | | 200 Settings |
 | PATCH | `/api/settings` | `{ autofix?, bulk?: { on?, delegate?, agents? } }` | 200 Settings |
 | GET | `/api/events` | query: `host` (optional filter) | SSE stream |
@@ -381,7 +418,7 @@ Errors: `{ "error": "<plain message>" }` with 400, 403, 404, 405, 409, 413, 415,
 - The queue page left this server on 2026-10-18; it is the Pins tab in the Triad console.
 - Env: `PORT` (default `4750`; empty counts as not set), `PINS_DOWNLOAD_DIR` (default
   `<repo>/extension/dist`), `PINS_DB` (default `<repo>/data/pins.db`), `PINS_SHOTS_DIR` (default
-  `shots` next to the database), `PINS_ROOT_DOMAIN` (default `koglabs.com`), `PINS_QUEUE_URL`
+  `shots` next to the database), `PINS_IMAGES_DIR` (v3.6, default `images` next to the database), `PINS_ROOT_DOMAIN` (default `koglabs.com`), `PINS_QUEUE_URL`
   (default `https://ai.koglabs.com/triad?tab=pins`; where `GET /` redirects). A bad `PORT` or
   `PINS_QUEUE_URL` stops the start with one line on stderr and exit code 1.
 
@@ -443,7 +480,9 @@ url: https://crete.koglabs.com/pricing?x=1
 The detail format also has, after `batch`: `versions: <short sha> <summary> · ...` (oldest first),
 `go back: undo <short sha>, <short sha>` while `revert` is set and `reverted: <hh:mm>` when `revertedAt`
 is set.
-The `about`, `presets`, `steps`, `shots`, `versions`, `go back` and `reverted` lines appear only when they
+The detail format (v3.6) has the line `images: <n> (pins images <id> saves them)` after the `quote` line when the pin
+has images.
+The `about`, `presets`, `steps`, `shots`, `versions`, `go back`, `reverted` and `images` lines appear only when they
 have content. The list format adds ` · <intent>` after the label when `intent` is set, and ` · go back`
 while `revert` is set. In the list and detail formats
 every run of whitespace or control characters in a value is one space.
@@ -465,6 +504,7 @@ pins reply <id> "text"
 pins wait [--host H] [--timeout 120]
 pins progress <id> "text"
 pins shot <id> before|after <file>
+pins images <id> [--dir D]
 pins snap <id> before|after [--url U] [--selector S] [--pad 40]
 pins check <id> --url U [--selector S] [--pad 40]
 pins ship <id> --dir <worktree> --summary "..." [--message "..."] <path> [<path> ...]
@@ -473,6 +513,10 @@ pins ship <id> --dir <worktree> --summary "..." [--message "..."] <path> [<path>
 Only `--name` is an option. A text may start with one dash (`pins progress 12 "- tests pass"`); a
 value may start with `--` (`--summary "--accent is blue"`) unless it is the name of an option of
 that command. `PINS_PORT` must be a port number, else exit 1. `pins shot` needs a regular file.
+
+`pins images <id>` (v3.6) saves each image of the pin, oldest first, as `<D>/pins-<id>-<n>.<ext>` (`n` from 1; `png`,
+`jpg` or `webp` from the first bytes; mode 0600; `D` defaults to `os.tmpdir()`) and prints one path per line, or
+`#<id> has no images`.
 
 `pins shot` uploads an image file (type from its first bytes). `pins snap` renders the page with
 playwright-core (`/srv/design-kit/node_modules/playwright-core`, loaded only by this command; the
@@ -565,7 +609,7 @@ One codebase, two builds: `dist/chrome/` (MV3 service worker) and `dist/firefox/
     Set positions with `el.style.transform = ...` / `el.style.setProperty(...)` (CSSOM is not blocked).
 - Chrome service workers have no `EventSource`. The background reads SSE with `fetch` and a stream reader.
 - The UI is plain DOM (no React, no framework). Budget: `content.js` at most 88 KB minified
-  (90112 bytes); the build stops above it. The v3.3 build is 77819 bytes.
+  (90112 bytes); the build stops above it. The 0.7.0 build is about 88,000 bytes.
 
 ### Constants (`extension/src/shared/protocol.js`)
 
@@ -612,6 +656,13 @@ One-shot, `ext.runtime.sendMessage(msg)` returns a promise:
   `createImageBitmap` into a `<canvas>`; it never puts an image URL in the page, so the page CSP
   cannot block it. The read stops at 2 MiB also when the response has no true `Content-Length`
   (413). No answer in 30 s gives `{ ok: false, status: 0 }`. A redirect counts as a 401.
+- `{ t: "image", id }` (0.7.0) -> `{ ok, status, type, data }`: the same reader as `shot`, for
+  `API + /api/images/<id>` (`id` matches `^[A-Za-z0-9_-]{22}$`, else `{ ok: false, status: 400 }`).
+- `{ t: "upload", type, data }` (0.7.0) -> `{ ok, status, data: { image } | null, error? }`: `data` is the image as
+  base64. The background checks the type (png, jpeg, webp), the size (1 byte to 2 MiB) and the first bytes, else
+  `{ ok: false, status: 400 }`, then sends `POST API + /api/images` with the raw bytes and that `Content-Type`
+  (the one `fetch` function, 30 s). 401 or a redirect: state `login` and status 401. The `api` message never
+  reaches `/api/images`.
 
 Live port, `ext.runtime.connect({ name: PORT_NAME })`:
 
@@ -702,6 +753,17 @@ them in one request; the fix run starts at once.
    Task "What should the agent do?". With the Remove tab the note may be empty; the pin then sends
    the note "Remove this element." The choices are saved with the unsent pin and sent with the
    batch as `intent`, `scope` and `presets` (`{ label, text }`). The defaults come from Settings.
+   **Images** (0.7.0): a trusted paste of an image into the note box, a trusted drop of image files on the popup, or
+   the icon button "Add an image" (a file picker, opened with `showPicker()`) adds images: at most 6 ("A pin takes up
+   to 6 images."). Each one decodes with `createImageBitmap` ("That file is not an image this browser can read." when
+   it does not); a PNG, JPEG or WebP of at most 2 MiB and at most 2560 px on its longest side goes as it is, any
+   other is drawn into a canvas (longest side at most 2560 px) and sent as WebP 0.9, then JPEG 0.8, then smaller
+   ("That image is too large." after 3 tries). It uploads at once (`upload` message). A row of thumbnails (canvas)
+   under the note box shows them, each with "Remove image <n>"; a thumbnail is dimmed while it uploads, and a failed
+   upload leaves the row and shows "Image not added: <reason>". A paste with text and an image keeps the text. An
+   event that a script made (paste, drop, change) adds nothing. Add, Enter and Ctrl+Enter wait for no upload: while
+   one runs they say "Wait until the image is uploaded." and send nothing. A pin with images and an empty note gets the
+   note "See the attached image." ("See the attached images." for more than one).
    Enter adds the pin to the batch (an *unsent pin*) and keeps pin mode on. Ctrl+Enter (⌘↵ on macOS) adds it and
    submits all. Shift+Enter is a new line. Esc closes; the unsent text per URL stays in
    `ext.storage.local` (`kog-pins:draft:<url>`) and fills the next popup on that page.
@@ -710,7 +772,9 @@ them in one request; the fix run starts at once.
    marker numbered 1, 2, 3 on its page. A click opens it to edit or remove. A v1 failed send
    (`kog-pins:pending:<url>`) becomes an unsent pin on load. A stored unsent pin is used only when
    its `url` is an `https:` URL of this host, its note is not empty and each target holds a
-   `selector` and a `label`. Other entries are dropped when the data is read. While "Submit all"
+   `selector` and a `label`. Other entries are dropped when the data is read. An unsent pin keeps the ids of its
+   uploaded images (`images`, at most 6 image ids; bad entries are dropped when the data is read); "Submit all"
+   sends them as `images` of that pin, and editing it shows and changes them. The unsent text per URL keeps no images. While "Submit all"
    runs, a pin that another tab adds stays unsent and joins the list after the send.
 6. **Tray.** Bottom centre while unsent pins exist or pin mode is on: "3 pins ready" (with a "Bulk" chip,
    "Bulk · 3 agents" when it delegates, while bulk mode is on), Ctrl+↵,
@@ -748,7 +812,11 @@ them in one request; the fix run starts at once.
     While working: the elapsed time (ticks only while the card is open), the steps of the run
     (oldest first, live), and **Watch live**, a link to `https://ai.koglabs.com/agents?tab=today&run=<id>`
     for a `triad:<id>` run. When shots exist: **Before** and **After** side by side (canvas, see the
-    `shot` message); a click shows one at the full card width, a second click goes back. Queued: Edit, Dismiss, Delete. Working
+    `shot` message); a click shows one at the full card width, a second click goes back.
+    **Images** (0.7.0): the images of the pin with `replyId: null` show as a strip after the note, and the images of a
+    reply inside that reply (canvas, `image` message; a click shows one at the full card width, a second click goes
+    back). The reply box takes images like the note popup ("A reply takes up to 6 images."); a reply with images and
+    no text sends "See the attached image." ("See the attached images." for more than one). Queued: Edit, Dismiss, Delete. Working
     or waiting: Dismiss, Reopen, Delete; a reply on a waiting pin requeues it. Done: See it,
     **Looks good** (sends `POST /api/pins/:id/accept`, then marks the pin seen; it marks it seen
     also when the call fails), **Not right** (opens "What is still wrong?"; sending posts the reply
@@ -1099,6 +1167,16 @@ code, writes git state or deploys. A Claude session does that, under the standin
     `pins done <id> --summary ... --commit <sha>`), ask only when a commit cannot be found or the undo
     would remove other work, never dismiss (if the old version is live already, `pins done` without a
     commit), and the hard end state.
+
+17. **Images** (v3.6; `runner/src/images.js`). Before the start of a run (a single pin, or each pin of a bulk run; never a
+    revert run), the runner saves each image of the pin (at most 12) over loopback (`GET /api/images/:imageId`, at most
+    2 MiB, PNG, JPEG or WebP by its first bytes) to `PINS_RUNNER_IMAGES_DIR` (default `/var/lib/onspot-runner/images`)
+    as `<pin id>-<n>.<ext>` (mode 0600, folder 0700). Each save removes the files of that folder that are older than 30
+    days. All images of one run take at most 5 s; a failed image logs `image skipped pin=<id> n=<n>` and never stops
+    the run. "His words" in the prompt (and each pin of a bulk prompt) then list them: `Images he attached (his
+    material, like the note; open each one with the Read tool before you change anything):`, one line per image with
+    its path and `(with the note)`, `(with his reply at HH:MM)` or `(with an agent reply at HH:MM)`; an image that was not
+    saved reads `not saved; run "pins images <id>" to get it`.
 
 ### Bulk mode (runner, while `settings.bulk.on` is `true`)
 

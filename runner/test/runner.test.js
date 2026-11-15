@@ -187,16 +187,17 @@ test("the daily limit counts runs and resets at UTC midnight", async (t) => {
 });
 
 test("environment limits validate their values and ranges", () => {
-  const home = { cwd: homedir(), projectsDir: join(homedir(), ".claude", "memory-store", "projects") };
+  const home = { cwd: homedir(), projectsDir: join(homedir(), ".claude", "memory-store", "projects"), imagesDir: "/var/lib/onspot-runner/images" };
   assert.deepEqual(readConfig({}), { port: 4750, disabled: false, maxRuns: 0, maxRunsPerProject: 0, maxRunsPerDay: 0, skipHosts: [], brief: true, shots: true, lean: true, ...home });
   assert.deepEqual(readConfig({ PINS_PORT: "6000", PINS_RUNNER_DISABLED: "1", MAX_RUNS: "100", MAX_RUNS_PER_PROJECT: "1", MAX_RUNS_PER_DAY: "0", PINS_RUNNER_SKIP_HOSTS: ".drop.koglabs.com, .x.koglabs.com",
     PINS_RUNNER_BRIEF: "0", PINS_RUNNER_SHOTS: "1", PINS_RUNNER_LEAN: "0", PINS_RUNNER_CWD: "/srv/agents", PINS_PROJECTS_DIR: "/srv/memory/projects" }),
     { port: 6000, disabled: true, maxRuns: 100, maxRunsPerProject: 1, maxRunsPerDay: 0, skipHosts: [".drop.koglabs.com", ".x.koglabs.com"], brief: false, shots: true, lean: false,
-      cwd: "/srv/agents", projectsDir: "/srv/memory/projects" });
+      cwd: "/srv/agents", projectsDir: "/srv/memory/projects", imagesDir: "/var/lib/onspot-runner/images" });
   assert.equal(readConfig({ PINS_RUNNER_DISABLED: "0" }).disabled, false);
   for (const env of [{ PINS_PORT: "https://outside" }, { MAX_RUNS: "-1" }, { MAX_RUNS: "" }, { MAX_RUNS: "2.5" },
     { MAX_RUNS_PER_PROJECT: "-1" }, { MAX_RUNS_PER_DAY: "NaN" }, { PINS_RUNNER_SKIP_HOSTS: "drop.koglabs.com" },
-    { PINS_RUNNER_CWD: "relative/folder" }, { PINS_RUNNER_CWD: "" }, { PINS_PROJECTS_DIR: "projects" }]) {
+    { PINS_RUNNER_CWD: "relative/folder" }, { PINS_RUNNER_CWD: "" }, { PINS_PROJECTS_DIR: "projects" },
+    { PINS_RUNNER_IMAGES_DIR: "images" }]) {
     assert.throws(() => readConfig(env), /Invalid/, JSON.stringify(env));
   }
   for (const config of [{ maxRuns: -1 }, { maxRunsPerProject: 1.5 }, { maxRunsPerDay: -2 }]) assert.throws(() => createRunner({ config }), /Invalid MAX_RUNS/);

@@ -4,11 +4,19 @@ import { execFileSync } from "node:child_process";
 import { setImmediate as settle } from "node:timers/promises";
 import { createAPI } from "../src/bg/api.js";
 import { createLive } from "../src/bg/live.js";
-import { createShot } from "../src/bg/shot.js";
+import { createImage, createShot } from "../src/bg/shot.js";
+import { createUpload } from "../src/bg/upload.js";
+import { bytesToBase64 } from "../src/shared/image.js";
 import { API, API_PATH_RE, MSG, STATE } from "../src/shared/protocol.js";
 
 const request = (overrides = {}) => ({ t: MSG.API, method: "GET", path: "/api/health", ...overrides });
 const shotRequest = (overrides = {}) => ({ t: MSG.SHOT, id: 12, kind: "before", ...overrides });
+const IMAGE_ID = "Abcd1234_-Abcd1234_-Ab";
+const PNG = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3);
+const JPEG = Uint8Array.of(0xff, 0xd8, 0xff, 0xe0, 1, 2, 3);
+const uploadRequest = (overrides = {}) => ({ t: MSG.UPLOAD, type: "image/png", data: bytesToBase64(PNG), ...overrides });
+const imageRequest = (overrides = {}) => ({ t: MSG.IMAGE, id: IMAGE_ID, ...overrides });
+const savedImage = { id: IMAGE_ID, type: "image/png", size: PNG.length, replyId: null, author: "sam", createdAt: "2026-11-15T10:00:00.000Z" };
 const image = (bytes, type = "image/png", length) => new Response(bytes, { headers: { "Content-Type": type, ...(length ? { "Content-Length": String(length) } : {}) } });
 const MIB2 = 2 * 1024 * 1024;
 const encode = (text) => new TextEncoder().encode(text);
@@ -156,7 +164,7 @@ test("the path allowlist holds what the content script calls and nothing that on
   const allowed = ["/api/health", "/api/pins", "/api/pins?host=a.koglabs.com&status=all&limit=50", "/api/pins/12", "/api/batches",
     "/api/pins/12/dismiss", "/api/pins/12/reopen", "/api/pins/12/replies", "/api/pins/12/accept", "/api/pins/12/revert", "/api/settings"];
   const refused = ["/api/pins/12/shots/before", "/api/pins/12/shots/after", "/api/pins/12/progress", "/api/pins/12/ask", "/api/settings/bulk",
-    "/api/settingsx", "/api/pins/12/accept/1", "/api/pins/0/accept", "/api/pins/12/revert/1", "/api/pins/12/reverts", "/api/events", "/mcp", "/download/onspot-chrome.zip", "/api/pins/12/replies/3", "/api/pins/12?x#y", "/pins/api/health"];
+    "/api/settingsx", "/api/pins/12/accept/1", "/api/pins/0/accept", "/api/pins/12/revert/1", "/api/pins/12/reverts", "/api/events", "/api/images", `/api/images/${"a".repeat(22)}`, "/mcp", "/download/onspot-chrome.zip", "/api/pins/12/replies/3", "/api/pins/12?x#y", "/pins/api/health"];
   for (const path of allowed) assert.equal(API_PATH_RE.test(path), true, path);
   let count = 0;
   const api = createAPI({ fetch: () => { count++; throw new Error("must not fetch"); } });
@@ -280,14 +288,71 @@ test("API maps JSON, 204, non-JSON, errors, 401, offline and timeout responses",
 
 test("a followed redirect is not trusted: only the first answer of the API counts", async () => {
   // With `redirect: "manual"` the browser never sends the cookie or the body to a second address.
-  for (const make of [createAPI, createShot]) {
+  for (const [make, message] of [[createAPI, request()], [createShot, shotRequest()], [createImage, imageRequest()], [createUpload, uploadRequest()]]) {
     const calls = [];
-    await make({ fetch: async (...args) => { calls.push(args); return redirect(); } })(make === createAPI ? request() : shotRequest());
+    await make({ fetch: async (...args) => { calls.push(args); return redirect(); } })(message);
     assert.equal(calls.length, 1);
     assert.equal(calls[0][1].redirect, "manual");
     assert.equal(calls[0][1].credentials, "include");
     assert.ok(calls[0][0].startsWith(`${API}/api/`));
   }
+});
+
+test("image refuses a bad id before fetch and reads one image like a shot", async () => {
+  let count = 0;
+  const read = createImage({ fetch: () => { count++; throw new Error("must not fetch"); } });
+  const bad = [null, [], {}, imageRequest({ t: MSG.SHOT }),
+    ...["", "short", `${IMAGE_ID}x`, `${IMAGE_ID.slice(0, 21)}+`, "a/b", null, 1, [IMAGE_ID]].map((id) => imageRequest({ id }))];
+  for (const message of bad) assert.deepEqual(await read(message), { ok: false, status: 400 }, JSON.stringify(message));
+  assert.equal(count, 0);
+  const calls = [];
+  const bytes = Uint8Array.from(PNG);
+  const ok = await createImage({ fetch: async (...args) => { calls.push(args); return image(bytes, "image/webp"); } })(imageRequest());
+  assert.deepEqual(calls.map(sent), [[`${API}/api/images/${IMAGE_ID}`, COOKIE_NO_REDIRECT]]);
+  assert.equal(ok.type, "image/webp");
+  assert.deepEqual(new Uint8Array(Buffer.from(ok.data, "base64")), bytes);
+  let login = 0;
+  const live = { requireLogin: () => login++ };
+  assert.deepEqual(await createImage({ fetch: async () => new Response(null, { status: 401 }), live })(imageRequest()), { ok: false, status: 401 });
+  assert.deepEqual(await createImage({ fetch: async () => redirect(), live })(imageRequest()), { ok: false, status: 401 });
+  assert.equal(login, 2);
+});
+
+test("upload checks the message, the magic bytes and the size, then posts the raw image", async () => {
+  let count = 0;
+  const upload = createUpload({ fetch: () => { count++; throw new Error("must not fetch"); } });
+  const bad = [null, [], {}, uploadRequest({ t: MSG.API }), uploadRequest({ type: "image/gif" }), uploadRequest({ type: "image/jpeg" }),
+    uploadRequest({ data: "" }), uploadRequest({ data: "!!!!" }), uploadRequest({ data: 1 }), uploadRequest({ data: null }),
+    uploadRequest({ data: "A".repeat(Math.ceil(MIB2 / 3) * 4 + 1) })];
+  for (const message of bad) assert.deepEqual(await upload(message), { ok: false, status: 400, data: null }, JSON.stringify(message?.data)?.slice(0, 80));
+  assert.equal(count, 0);
+  const calls = [];
+  const live = { requireLogin: () => {} };
+  const result = await createUpload({ fetch: async (...args) => { calls.push(args); return Response.json({ image: savedImage }, { status: 201 }); }, live })(uploadRequest());
+  assert.deepEqual(result, { ok: true, status: 201, data: { image: savedImage } });
+  assert.deepEqual(sent(calls[0]), [`${API}/api/images`, { method: "POST", ...COOKIE_NO_REDIRECT, headers: { "Content-Type": "image/png" }, body: PNG }]);
+  const jpegCalls = [];
+  await createUpload({ fetch: async (...args) => { jpegCalls.push(args); return Response.json({ image: { ...savedImage, type: "image/jpeg" } }, { status: 201 }); } })(uploadRequest({ type: "image/jpeg", data: bytesToBase64(JPEG) }));
+  assert.equal(jpegCalls[0][1].headers["Content-Type"], "image/jpeg");
+  assert.deepEqual(jpegCalls[0][1].body, JPEG);
+});
+
+test("upload reports a lost session, a server error, a bad success and a lost connection", async () => {
+  let login = 0;
+  const live = { requireLogin: () => login++ };
+  const cases = [
+    [new Response(null, { status: 401 }), { ok: false, status: 401, data: null, error: "login required" }],
+    [redirect(), { ok: false, status: 401, data: null, error: "login required" }],
+    [Response.json({ error: "too many images wait for a pin" }, { status: 409 }), { ok: false, status: 409, data: null, error: "too many images wait for a pin" }],
+    [new Response("nope", { status: 415 }), { ok: false, status: 415, data: null, error: "HTTP 415" }],
+    [Response.json({ image: { id: "short" } }, { status: 201 }), { ok: false, status: 502, data: null, error: "unexpected response" }],
+    [new Response("not json", { status: 201 }), { ok: false, status: 502, data: null, error: "unexpected response" }],
+  ];
+  for (const [response, expected] of cases) assert.deepEqual(await createUpload({ fetch: async () => response, live })(uploadRequest()), expected);
+  assert.equal(login, 2);
+  assert.deepEqual(await createUpload({ fetch: async () => { throw new Error("network"); }, live })(uploadRequest()), { ok: false, status: 0, data: null, error: "offline" });
+  assert.deepEqual(await alive(createUpload({ fetch: hang, live, timeoutMs: 20 })(uploadRequest())), { ok: false, status: 0, data: null, error: "timeout" });
+  assert.equal(login, 2);
 });
 
 test("one live stream fans out only to each subscribed host and accepts pings", async (t) => {
@@ -550,7 +615,7 @@ test("background answers only its own content script on the root domain, in both
         { ...page, url: 'https://koglabs.com.evil.example/' }, { ...page, url: 'https://notkoglabs.com/' }, { ...page, url: 'https://evil.example/?https://koglabs.com/' },
         { ...page, url: 'chrome-extension://' + ID + '/page.html' }, { ...page, url: 'about:blank' }];
       for (const sender of strangers) {
-        for (const message of [{ t: 'state' }, health, { t: 'shot', id: 1, kind: 'before' }]) {
+        for (const message of [{ t: 'state' }, health, { t: 'shot', id: 1, kind: 'before' }, { t: 'upload', type: 'image/png', data: 'a' }, { t: 'image', id: 'a' }]) {
           assert.equal(api.runtime.onMessage.fn(message, sender, () => assert.fail('answered ' + JSON.stringify(sender))), false);
         }
       }
@@ -575,6 +640,10 @@ test("background answers only its own content script on the root domain, in both
       assert.deepEqual(result, { ok: true, status: 200, data: { ok: true } });
       const shot = await new Promise((resolve) => assert.equal(api.runtime.onMessage.fn({ t: 'shot', id: '1/../2', kind: 'before' }, page, resolve), true));
       assert.deepEqual(shot, { ok: false, status: 400 });
+      const upload = await new Promise((resolve) => assert.equal(api.runtime.onMessage.fn({ t: 'upload', type: 'image/png', data: '!!!!' }, page, resolve), true));
+      assert.deepEqual(upload, { ok: false, status: 400, data: null });
+      const imageMsg = await new Promise((resolve) => assert.equal(api.runtime.onMessage.fn({ t: 'image', id: '../no' }, page, resolve), true));
+      assert.deepEqual(imageMsg, { ok: false, status: 400 });
       assert.deepEqual(fetched, ['https://ai.koglabs.com/pins/api/health']);
       api.commands.onCommand.fn('other');
       api.commands.onCommand.fn('toggle-pins');

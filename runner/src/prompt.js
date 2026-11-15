@@ -62,10 +62,12 @@ const block = (value) => (value.length ? [...value, ""] : []);
  * @param {{ pin: object, project: { name: string|null, dir: string|null, candidates: string[] },
  *           choice: { label: string }, replies?: object[],
  *           history?: object[], siblings?: object[],
- *           brief?: { card: string[], hints: string[], ship: boolean }|null, shot?: boolean, lean?: boolean }} run
- * Without brief, shot and lean the text is the v3.1 prompt.
+ *           brief?: { card: string[], hints: string[], ship: boolean }|null, shot?: boolean, lean?: boolean,
+ *           saved?: (string|null)[] }} run
+ * saved is one path per image of the pin, or null when that image was not saved. Without brief,
+ * shot and lean the text is the v3.1 prompt. A pin with no images adds no image lines.
  */
-export function buildPrompt({ pin, project, choice, replies = [], history = [], siblings = [], brief = null, shot = false, lean = false }) {
+export function buildPrompt({ pin, project, choice, replies = [], history = [], siblings = [], brief = null, shot = false, lean = false, saved }) {
   const id = pin.id;
   const card = list(brief?.card), hints = list(brief?.hints), ship = brief?.ship === true;
   const check = brief || shot || lean
@@ -81,7 +83,7 @@ export function buildPrompt({ pin, project, choice, replies = [], history = [], 
     "",
     "His words:",
     ...words(pin, replies),
-    "",
+    ...imageGap(pin, replies, saved),
     ...fence(pin, siblings),
     FENCE_RULE,
     "",
@@ -189,7 +191,7 @@ export function buildRevertPrompt({ pin, project, choice, replies = [], brief = 
  * One prompt for all pins of a bulk run, in id order (Bulk mode, item 5). If it is longer than
  * PROMPT_BYTES, the history of every pin goes first, then the hints; his words and the page data
  * stay whole.
- * @param {{ items: { pin: object, replies?: object[], history?: object[], brief?: object|null }[],
+ * @param {{ items: { pin: object, replies?: object[], history?: object[], brief?: object|null, saved?: (string|null)[] }[],
  *           project: object, choice: { id: string, label: string },
  *           bulk: { delegate: boolean, agents: number }, account: string, shot?: boolean }} run
  */
@@ -215,10 +217,11 @@ function bulkText({ items, project, choice, bulk, account, shot = false }) {
     `Bulk mode: you take all ${n} pins of this Submit all.`,
     "",
     FENCE_RULE,
-    ...pins.flatMap(({ pin, replies = [], history = [], brief }) => [
+    ...pins.flatMap(({ pin, replies = [], history = [], brief, saved }) => [
       "",
       `Pin #${pin.id}. His words:`,
       ...words(pin, replies),
+      ...imageSection(pin, replies, saved),
       ...fence(pin),
       ...earlier(history),
       ...list(brief?.hints),
@@ -253,6 +256,43 @@ function bulkText({ items, project, choice, bulk, account, shot = false }) {
     `Hard end state: when you stop, none of the pins ${ids} is "working". Each is done (with its commit), waiting (you asked) or dismissed.`,
     "Report at the end, one line per pin: pin, result, commit, live check.",
   ]);
+}
+
+const IMAGE_HEADER = "Images he attached (his material, like the note; open each one with the Read tool before you change anything):";
+
+// UTC hours and minutes of an ISO time. `pins show` uses the same clock for a reply line.
+const clock = (iso) => {
+  const text = String(iso ?? "").slice(11, 16);
+  return /^\d{2}:\d{2}$/.test(text) ? text : "";
+};
+
+function imageWhere(image, replies) {
+  if (image?.replyId == null) return "(with the note)";
+  const reply = (Array.isArray(replies) ? replies : []).find((item) => item && String(item.id) === String(image.replyId));
+  const at = clock(reply?.createdAt) || clock(image?.createdAt);
+  const who = reply && reply.kind !== "user" ? "an agent reply" : "his reply";
+  return at ? `(with ${who} at ${at})` : `(with ${who})`;
+}
+
+// The image block, with a blank line before it and after it. No images: no lines.
+function imageSection(pin, replies, saved) {
+  const list = Array.isArray(pin.images) ? pin.images.slice(0, 12) : [];
+  if (!list.length) return [];
+  const id = pin.id;
+  const lines = list.map((image, index) => {
+    const n = index + 1;
+    const path = saved?.[index];
+    if (typeof path === "string" && path.startsWith("/") && !/[\u0000-\u001f\u007f]/.test(path)) return `${n}. ${path} ${imageWhere(image, replies)}`;
+    return `${n}. not saved; run "pins images ${id}" to get it`;
+  });
+  return ["", IMAGE_HEADER, ...lines, ""];
+}
+
+// A single-pin prompt already has a blank line before the page data. Keep that line when the pin
+// has no images, and do not add a second one when the block brings its own.
+function imageGap(pin, replies, saved) {
+  const section = imageSection(pin, replies, saved);
+  return section.length ? section : [""];
 }
 
 // His words: the note, About, Scope, presets and the newest 6 thread lines.

@@ -1,11 +1,12 @@
-// Pins, replies and steps in SQLite (node:sqlite, no native modules); shots in files. Validates
+// Pins, replies, steps and image metadata in SQLite (node:sqlite, no native modules); shots and images in files. Validates
 // every write and emits a "change" event after it. The HTTP API, SSE and MCP all go through this module.
 import { DatabaseSync } from "node:sqlite";
+import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ID } from "./id.js";
-import { SHOT_KINDS, SHOT_MAX, SHOT_TYPES, shotType } from "./shots.js";
+import { IMAGE_ID_RE, SHOT_KINDS, SHOT_MAX, SHOT_TYPES, shotType } from "./shots.js";
 
 export class ValidationError extends Error {
   status = 400;
@@ -43,6 +44,11 @@ const SCOPES = ["element", "similar", "page", "site"];
 const STEP_MAX = 40;
 // A shot file, or the temp file of an upload that did not finish.
 const SHOT_FILE_RE = new RegExp(`^(${ID})-(?:${SHOT_KINDS.join("|")})(?:\\.tmp)?$`);
+// An image file, or its temp file. Images per pin input or reply, per pin, and unlinked on the server.
+const IMAGE_FILE_RE = /^([A-Za-z0-9_-]{22})(?:\.tmp)?$/;
+const IMAGES_PER_INPUT = 6;
+const IMAGES_PER_PIN = 12;
+const IMAGES_WAITING = 200;
 // Columns that newer versions added; an older file gets them on open.
 const ADDED_COLUMNS = [["run", "TEXT"], ["batch", "INTEGER"], ["model", "TEXT"], ["attempts", "INTEGER NOT NULL DEFAULT 0"],
   ["intent", "TEXT"], ["scope", "TEXT"], ["presets", "TEXT"], ["shot_before", "TEXT"], ["shot_after", "TEXT"],
@@ -120,6 +126,16 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS images (
+  id TEXT PRIMARY KEY,
+  pin_id INTEGER REFERENCES pins(id) ON DELETE CASCADE,
+  reply_id INTEGER,
+  type TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  author TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS images_pin ON images(pin_id, created_at);
 `;
 
 // `l` is the latest step of the pin; the steps table holds only the current run.
@@ -283,7 +299,7 @@ function cleanViewport(v) {
   return Object.keys(out).length ? out : null;
 }
 
-function toPin(row) {
+function toPin(row, images = []) {
   return {
     id: row.id,
     status: row.status,
@@ -313,6 +329,7 @@ function toPin(row) {
     versions: row.versions ? JSON.parse(row.versions) : [],
     revert: row.revert ? JSON.parse(row.revert) : null,
     revertedAt: row.reverted_at ?? null,
+    images,
     replyCount: Number(row.reply_count ?? 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -322,10 +339,13 @@ function toPin(row) {
 }
 
 const toReply = (row) => ({ id: row.id, pinId: row.pin_id, kind: row.kind, author: row.author, body: row.body, createdAt: row.created_at });
+const toImage = (row) => ({ id: row.id, type: row.type, size: row.size, replyId: row.reply_id ?? null, author: row.author, createdAt: row.created_at });
 const toStep = (row) => ({ id: row.id, pinId: row.pin_id, author: row.author, body: row.body, createdAt: row.created_at });
 
-// Shots are files `<pin id>-<kind>` in shotsDir (default: "shots" next to the database file).
-export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file && file !== ":memory:" ? join(dirname(file), "shots") : null } = {}) {
+// Shots are files `<pin id>-<kind>` in shotsDir, images files `<image id>` in imagesDir (default: "shots" and
+// "images" next to the database file).
+export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file && file !== ":memory:" ? join(dirname(file), "shots") : null,
+  imagesDir = file && file !== ":memory:" ? join(dirname(file), "images") : null } = {}) {
   if (!file) throw new Error("openStore needs a file (or ':memory:')");
   if (file !== ":memory:") mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
@@ -367,6 +387,15 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
     closedAt: db.prepare(`SELECT closed_at FROM pins WHERE id = ?`),
     stats: db.prepare(`SELECT host, status, COUNT(*) AS n FROM pins GROUP BY host, status ORDER BY host`),
     setting: db.prepare(`SELECT value FROM settings WHERE key = ?`),
+    imagesOf: db.prepare(`SELECT * FROM images WHERE pin_id IN (SELECT value FROM json_each(?)) ORDER BY created_at, rowid`),
+    imageGet: db.prepare(`SELECT id FROM images WHERE id = ?`),
+    imageInsert: db.prepare(`INSERT INTO images (id, type, size, author, created_at) VALUES (?, ?, ?, ?, ?)`),
+    imageLink: db.prepare(`UPDATE images SET pin_id = ?, reply_id = ? WHERE id = ? AND pin_id IS NULL`),
+    imagesWaiting: db.prepare(`SELECT COUNT(*) AS n FROM images WHERE pin_id IS NULL`),
+    imageCount: db.prepare(`SELECT COUNT(*) AS n FROM images WHERE pin_id = ?`),
+    imageIds: db.prepare(`SELECT id FROM images WHERE pin_id = ?`),
+    imagesOld: db.prepare(`DELETE FROM images WHERE (pin_id IS NULL AND created_at < ?) OR pin_id IN (SELECT id FROM pins WHERE closed_at < ?)`),
+    imageIdsAll: db.prepare(`SELECT id FROM images`),
     setSetting: db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`),
   };
 
@@ -387,9 +416,15 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
     return { url: u.href, host: u.host.toLowerCase(), path: u.pathname || "/" };
   }
 
+  // Pin rows to pin JSON, with the images of all of them read in one query.
+  const toPins = (rows) => {
+    const images = new Map(rows.map((row) => [row.id, []]));
+    if (rows.length) for (const row of q.imagesOf.all(JSON.stringify(rows.map((r) => r.id)))) images.get(row.pin_id).push(toImage(row));
+    return rows.map((row) => toPin(row, images.get(row.id)));
+  };
   const getPin = (id) => {
     const row = q.get.get(id);
-    return row ? toPin(row) : null;
+    return row ? toPins([row])[0] : null;
   };
   const emit = (e) => events.emit("change", e);
   // Called after the commit, so it must not throw: the change event still has to go out. A file that stays is
@@ -400,6 +435,38 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
       try { rmSync(join(shotsDir, `${id}-${kind}`), { force: true }); } catch { /* It stays hidden. */ }
     }
   };
+  // Like removeShots: called after the commit, so it never throws. A file that stays goes at the next prune.
+  const removeImages = (ids) => {
+    for (const id of ids) {
+      try { rmSync(join(imagesDir, id), { force: true }); } catch { /* The prune removes it. */ }
+    }
+  };
+  // 0 to 6 image ids, each once. Checked before anything is written.
+  function cleanImages(v) {
+    if (v === undefined || v === null) return [];
+    if (!Array.isArray(v) || v.length > IMAGES_PER_INPUT || v.some((id) => typeof id !== "string" || !IMAGE_ID_RE.test(id)) || new Set(v).size !== v.length) {
+      throw new ValidationError(`images must hold 0 to ${IMAGES_PER_INPUT} different image ids`);
+    }
+    return v;
+  }
+  // Inside the transaction of the pin or the reply insert: only an unlinked image can be linked.
+  function linkImages(ids, pinId, replyId) {
+    for (const id of ids) {
+      if (!q.imageLink.run(pinId, replyId, id).changes) throw new ValidationError(`image ${id.slice(0, 6)} is gone; remove it and try again`);
+    }
+  }
+  // One write: BEGIN IMMEDIATE, fn, COMMIT; ROLLBACK when fn throws.
+  function inTransaction(fn) {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = fn();
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
   const getSettings = () => {
     const autofix = q.setting.get("autofix");
     const bulk = q.setting.get("bulk");
@@ -413,7 +480,7 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
   }
 
   // Validate one new pin completely before anything is written.
-  function preparePin({ url, title, note, quote, targets, viewport, intent, scope, presets } = {}) {
+  function preparePin({ url, title, note, quote, targets, viewport, intent, scope, presets, images } = {}) {
     const where = parseUrl(url);
     const text = required(note, 4000, "note");
     if (!Array.isArray(targets) || targets.length < 1 || targets.length > 10) throw new ValidationError("targets must hold 1 to 10 elements");
@@ -422,14 +489,20 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
       title: clip(typeof title === "string" ? title.trim() : undefined, 300) ?? null,
       quote: clip(typeof quote === "string" ? quote.trim() : undefined, 2000) || null,
       intent: choice(intent, INTENTS, "intent"), scope: choice(scope, SCOPES, "scope"), presets: JSON.stringify(cleanPresets(presets)),
+      images: cleanImages(images),
     };
   }
-  const insertPin = (p, author, batch, t) => Number(q.insert.run(p.url, p.host, p.path, p.title, p.note, p.quote, p.targets, p.viewport, author, batch, p.intent, p.scope, p.presets, t, t).lastInsertRowid);
+  const insertPin = (p, author, batch, t) => {
+    const id = Number(q.insert.run(p.url, p.host, p.path, p.title, p.note, p.quote, p.targets, p.viewport, author, batch, p.intent, p.scope, p.presets, t, t).lastInsertRowid);
+    linkImages(p.images, id, null);
+    return id;
+  };
 
   return {
     createPin({ author, ...input } = {}) {
       const prepared = preparePin(input);
-      const pin = getPin(insertPin(prepared, optional(author, 60, "author"), null, now()));
+      const who = optional(author, 60, "author");
+      const pin = getPin(inTransaction(() => insertPin(prepared, who, null, now())));
       emit({ type: "pin", action: "created", pin });
       return pin;
     },
@@ -445,7 +518,7 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
       const toBatch = (row, pins, created) => ({ batch: { id: row.id, host: row.host, author: row.author, createdAt: row.created_at, count: pins.length }, pins, created });
       if (key) {
         const row = q.batchByKey.get(key);
-        if (row) return toBatch(row, q.batchPins.all(row.id).map(toPin), false);
+        if (row) return toBatch(row, toPins(q.batchPins.all(row.id)), false);
       }
       const prepared = items.map((item, index) => {
         try { return preparePin(item); }
@@ -454,17 +527,12 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
       const host = prepared[0].host;
       if (prepared.some((p) => p.host !== host)) throw new ValidationError("all pins in a batch must be on one host");
       const t = now();
-      let batchId;
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        batchId = Number(q.batchInsert.run(host, who, key || null, t).lastInsertRowid);
-        for (const p of prepared) insertPin(p, who, batchId, t);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-      const pins = q.batchPins.all(batchId).map(toPin);
+      const batchId = inTransaction(() => {
+        const id = Number(q.batchInsert.run(host, who, key || null, t).lastInsertRowid);
+        for (const p of prepared) insertPin(p, who, id, t);
+        return id;
+      });
+      const pins = toPins(q.batchPins.all(batchId));
       for (const pin of pins) emit({ type: "pin", action: "created", pin });
       return toBatch({ id: batchId, host, author: who, created_at: t }, pins, true);
     },
@@ -490,7 +558,7 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
       // The inner query picks the ids; only those rows get the reply and step subqueries of SELECT_PIN.
       // In one flat query SQLite runs the subqueries for every matching row before it sorts and cuts.
       const ids = `SELECT p.id FROM pins p${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY p.id DESC LIMIT ${n}`;
-      return db.prepare(`${SELECT_PIN} WHERE p.id IN (${ids}) ORDER BY p.id DESC`).all(...args).map(toPin);
+      return toPins(db.prepare(`${SELECT_PIN} WHERE p.id IN (${ids}) ORDER BY p.id DESC`).all(...args));
     },
 
     updateNote(id, note) {
@@ -570,15 +638,18 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
     deletePin(id) {
       const pin = getPin(id);
       if (!pin) return false;
+      const images = q.imageIds.all(id).map((row) => row.id);
       q.del.run(id);
       removeShots(pin.id);
+      removeImages(images);
       emit({ type: "pin", action: "deleted", pin });
       return true;
     },
 
     // A user reply on a waiting pin requeues it. With reopen: true it also sends a done or
     // dismissed pin back to the queue ("Not right").
-    addReply(id, { kind, author, body, reopen = false } = {}) {
+    addReply(id, { kind, author, body, reopen = false, images } = {}) {
+      const ids = cleanImages(images);
       let reply;
       let reopened;
       db.exec("BEGIN IMMEDIATE");
@@ -586,6 +657,8 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
         const pin = getPin(id);
         if (!pin) { db.exec("COMMIT"); return null; }
         reply = insertReply(id, kind, author, body);
+        if (ids.length && q.imageCount.get(id).n + ids.length > IMAGES_PER_PIN) throw new ConflictError(`a pin holds at most ${IMAGES_PER_PIN} images`);
+        linkImages(ids, id, reply.id);
         reopened = kind === "user" && (pin.status === "waiting" || (reopen === true && ["done", "dismissed"].includes(pin.status)));
         if (reopened) q.requeue.run(1, reply.createdAt, id);
         else q.touch.run(reply.createdAt, id);
@@ -660,6 +733,52 @@ export function openStore({ file, rootDomain = "koglabs.com", shotsDir = file &&
         const row = q.closedAt.get(Number(match[1]));
         if (row && !(row.closed_at && row.closed_at < cutoff)) continue;
         rmSync(join(shotsDir, name), { force: true });
+        removed++;
+      }
+      return removed;
+    },
+
+    // An image he attached, waiting for "Submit all" or the reply that links it. Written like a shot.
+    addImage({ type, bytes, author } = {}) {
+      if (!SHOT_TYPES.includes(type)) throw new ValidationError(`image type must be ${SHOT_TYPES.join(", ")}`);
+      if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > SHOT_MAX) throw new ValidationError("image must hold 1 byte to 2 MiB");
+      if (shotType(bytes) !== type) throw new ValidationError(`image is not ${type}`);
+      const who = optional(author, 60, "author");
+      if (!imagesDir) throw new Error("openStore needs an imagesDir to keep images");
+      if (q.imagesWaiting.get().n >= IMAGES_WAITING) throw new ConflictError("too many images wait for a pin");
+      const id = randomBytes(16).toString("base64url");
+      mkdirSync(imagesDir, { recursive: true, mode: 0o700 });
+      const path = join(imagesDir, id);
+      writeFileSync(`${path}.tmp`, bytes, { mode: 0o600 });
+      renameSync(`${path}.tmp`, path);
+      const t = now();
+      try { q.imageInsert.run(id, type, bytes.length, who, t); }
+      catch (error) { removeImages([id]); throw error; }
+      return { id, type, size: bytes.length, replyId: null, author: who, createdAt: t };
+    },
+
+    getImage(id) {
+      if (typeof id !== "string" || !IMAGE_ID_RE.test(id) || !imagesDir || !q.imageGet.get(id)) return null;
+      let bytes;
+      try { bytes = readFileSync(join(imagesDir, id)); }
+      catch (error) { if (error.code === "ENOENT") return null; throw error; }
+      const type = shotType(bytes);
+      return type ? { type, bytes } : null;
+    },
+
+    // Removes the images of pins closed more than olderThanDays ago and unlinked images older than that, then
+    // every file without a row (deleted pins, unfinished uploads). Runs with pruneShots.
+    pruneImages({ olderThanDays = 30 } = {}) {
+      if (!imagesDir) return 0;
+      const cutoff = new Date(Date.now() - olderThanDays * 86400000).toISOString();
+      q.imagesOld.run(cutoff, cutoff);
+      if (!existsSync(imagesDir)) return 0;
+      const known = new Set(q.imageIdsAll.all().map((row) => row.id));
+      let removed = 0;
+      for (const name of readdirSync(imagesDir)) {
+        const match = IMAGE_FILE_RE.exec(name);
+        if (!match || (known.has(match[1]) && name === match[1])) continue;
+        rmSync(join(imagesDir, name), { force: true });
         removed++;
       }
       return removed;
