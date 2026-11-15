@@ -10,3 +10,7 @@ export function shotType(bytes) {
   if (bytes.length >= 12 && bytes.toString("latin1", 0, 4) === "RIFF" && bytes.toString("latin1", 8, 12) === "WEBP") return "image/webp";
   return null;
 }
+
+// Images he attaches to a pin or a reply use the shot types and SHOT_MAX. An id is 16 random bytes as base64url.
+export const IMAGE_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+export const IMAGE_EXT = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };

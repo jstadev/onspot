@@ -15,7 +15,7 @@ let storageChain = Promise.resolve();
 const prefsWrites = new Set();
 export let prefs = cleanPrefs(undefined, MAC);
 
-export function textKey(url = pageURL) { return `kog-pins:draft:${url}`; } // unsent textarea text
+export function textKey(url = pageURL) { return `kog-pins:draft:${url}`; } // unsent textarea text; it does not keep images
 function legacyKey(url = pageURL) { return `kog-pins:pending:${url}`; } // v1 failed sends
 // Writes run one after the other, so a later write never lands before an earlier one.
 function write(task) {

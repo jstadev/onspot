@@ -24,11 +24,14 @@ const store = openStore({
   file: process.env.PINS_DB || resolve(root, "data/pins.db"),
   rootDomain: process.env.PINS_ROOT_DOMAIN || "koglabs.com",
   shotsDir: process.env.PINS_SHOTS_DIR || undefined,
+  imagesDir: process.env.PINS_IMAGES_DIR || undefined,
 });
-// Old shot files go at start and once a day. A failed cleanup must not stop the server.
+// Old shot and image files go at start and once a day. A failed cleanup must not stop the server.
 function pruneShots() {
-  try { store.pruneShots(); }
-  catch (error) { console.error(`pins: shot cleanup failed: ${String(error?.message ?? error).replace(/[\r\n]+/g, " ")}`); }
+  for (const [what, prune] of [["shot", store.pruneShots], ["image", store.pruneImages]]) {
+    try { prune(); }
+    catch (error) { console.error(`pins: ${what} cleanup failed: ${String(error?.message ?? error).replace(/[\r\n]+/g, " ")}`); }
+  }
 }
 pruneShots();
 setInterval(pruneShots, 24 * 60 * 60 * 1000).unref();

@@ -1160,6 +1160,147 @@ try {
       await clean(hp, shotsPage.issues); await hp.close();
       pass('a failed accept shows the reason, keeps Looks good for a retry and still marks the pin seen');
 
+      // Attached images (0.7.0): paste or pick, a thumbnail, remove, submit, and the card strips.
+      const imagesPage = await freshPage(context, '/images'); activePage = imagesPage.page;
+      const ip = imagesPage.page;
+      const pinPng = Buffer.from(png([20, 80, 200]), 'base64');
+      const replyPng = Buffer.from(png([200, 160, 20]), 'base64');
+      const imageIdRe = /^[A-Za-z0-9_-]{22}$/;
+      async function pickImage(buttonSelector, buffer) {
+        const [chooser] = await Promise.all([
+          ip.waitForEvent('filechooser', { timeout: 8000 }),
+          ip.locator(ui(buttonSelector)).click(),
+        ]);
+        await chooser.setFiles({ name: 'picture.png', mimeType: 'image/png', buffer });
+      }
+      async function addNoteImage(buffer) {
+        let added = false;
+        try {
+          await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
+          await ip.locator(ui('textarea[name="pin-note"]')).click();
+          added = await ip.evaluate(async (b64) => {
+            const bytes = Uint8Array.from(atob(b64), char => char.charCodeAt(0));
+            const write = navigator.clipboard.write([new ClipboardItem({ 'image/png': new Blob([bytes], { type: 'image/png' }) })]);
+            await Promise.race([write, new Promise((_, reject) => setTimeout(() => reject(new Error('clipboard')), 1000))]);
+            return true;
+          }, buffer.toString('base64'));
+        } catch { added = false; }
+        if (added) {
+          await ip.locator(ui('textarea[name="pin-note"]')).press('Control+V');
+          try { await ip.locator(ui('.popup .thumb')).waitFor({ timeout: 800 }); } catch { added = false; }
+        }
+        if (!added || await ip.locator(ui('.popup .thumb')).count() === 0) await pickImage('button.add-image', buffer);
+        assert.equal(await ip.locator(ui('.popup .thumb')).count(), 1, 'one thumbnail');
+      }
+      await ip.evaluate(() => { __fake.reset(); localStorage.removeItem('onspot-harness-storage'); __fake.delay = 30; });
+      await ip.reload(); await visible(ip, '.capsule');
+      await ip.locator(ui('.pin-button')).click(); await pick(ip, '#target'); await visible(ip, '.popup');
+      await ip.locator(ui('textarea[name="pin-note"]')).fill('Make the heading blue.');
+      const untrusted = await ip.evaluate(() => {
+        const box = document.querySelector('on-spot').shadowRoot.querySelector('textarea[name="pin-note"]');
+        const file = new File([Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10, 1)], 'x.png', { type: 'image/png' });
+        const data = new DataTransfer();
+        data.items.add(file);
+        let event;
+        try { event = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }); }
+        catch { event = new ClipboardEvent('paste', { bubbles: true, cancelable: true }); }
+        try { Object.defineProperty(event, 'clipboardData', { value: data }); } catch { /* the browser sealed clipboardData */ }
+        box.dispatchEvent(event);
+        return event.isTrusted;
+      });
+      assert.equal(untrusted, false, 'a script-made paste is not trusted');
+      assert.equal(await ip.locator(ui('.thumb')).count(), 0, 'an untrusted paste adds nothing');
+      assert.equal(await ip.evaluate(() => __fake.calls.some(call => call.t === 'upload')), false);
+      await ip.evaluate(() => { __fake.delay = 2500; });
+      await addNoteImage(pinPng);
+      await waitFor(ip, () => document.querySelector('on-spot').shadowRoot.querySelector('.popup .thumb')?.getAttribute('aria-busy') === 'true');
+      await ip.locator(ui('textarea[name="pin-note"]')).press('Enter');
+      await waitFor(ip, () => document.querySelector('on-spot').shadowRoot.querySelector('#onspot-note-error')?.textContent === 'Wait until the image is uploaded.');
+      assert.equal(await ip.locator(ui('.popup')).isVisible(), true, 'Enter during an upload keeps the popup open');
+      await ip.evaluate(() => { __fake.delay = 30; });
+      await waitFor(ip, () => {
+        const thumb = document.querySelector('on-spot').shadowRoot.querySelector('.popup .thumb');
+        return thumb?.getAttribute('aria-busy') === 'false' && thumb.querySelector('canvas')?.width > 0;
+      });
+      await ip.locator(ui('button[title="Remove image 1"]')).click();
+      await waitFor(ip, () => document.querySelector('on-spot').shadowRoot.querySelectorAll('.popup .thumb').length === 0);
+      await pickImage('button.add-image', pinPng);
+      await waitFor(ip, () => {
+        const thumb = document.querySelector('on-spot').shadowRoot.querySelector('.popup .thumb');
+        return thumb?.getAttribute('aria-busy') === 'false' && thumb.querySelector('canvas')?.width > 0;
+      });
+      await ip.locator(ui('textarea[name="pin-note"]')).press('Enter');
+      await gone(ip, '.popup');
+      await visible(ip, '.marker[data-status="draft"]');
+      const draft = await ip.evaluate(() => {
+        const store = JSON.parse(localStorage.getItem('onspot-harness-storage'));
+        return store['kog-pins:drafts:fixture.koglabs.com'].items[0].body;
+      });
+      assert.equal(draft.note, 'Make the heading blue.');
+      assert.equal(draft.images.length, 1);
+      assert.match(draft.images[0], imageIdRe);
+      await ip.locator(ui('.marker[data-status="draft"]')).click(); await visible(ip, '.popup');
+      await waitFor(ip, () => {
+        const thumb = document.querySelector('on-spot').shadowRoot.querySelector('.popup .thumb');
+        return thumb?.getAttribute('aria-busy') === 'false' && thumb.querySelector('canvas')?.width > 0;
+      });
+      assert.ok(await ip.evaluate(id => __fake.calls.some(call => call.t === 'image' && call.id === id), draft.images[0]), 'the edit popup fetches the image');
+      await ip.locator(ui('textarea[name="draft-note"]')).press('Control+Enter');
+      await marker(ip, 1, 'queued');
+      const batch = await ip.evaluate(() => __fake.calls.filter(call => call.method === 'POST' && call.path === '/api/batches').at(-1));
+      assert.equal(batch.body.pins.length, 1);
+      assert.equal(batch.body.pins[0].note, 'Make the heading blue.');
+      assert.deepEqual(batch.body.pins[0].images, draft.images);
+      await ip.locator(ui('.marker[data-pin="1"]')).click(); await visible(ip, '.thread');
+      const pinPixel = () => ip.evaluate(() => {
+        const canvas = document.querySelector('on-spot').shadowRoot.querySelector('.panel-body > .images .shot canvas');
+        return canvas && canvas.width === 40 ? [...canvas.getContext('2d').getImageData(20, 15, 1, 1).data] : null;
+      });
+      await waitFor(ip, () => document.querySelector('on-spot').shadowRoot.querySelector('.panel-body > .images .shot canvas')?.width === 40);
+      assert.deepEqual(await pinPixel(), [20, 80, 200, 255], 'the pin image is drawn');
+      const imageBoxes = () => ip.evaluate(() => {
+        const root = document.querySelector('on-spot').shadowRoot;
+        const body = root.querySelector('.panel-body').getBoundingClientRect();
+        const shot = root.querySelector('.panel-body > .images .shot');
+        const box = shot.getBoundingClientRect();
+        return { body: body.width, width: box.width, full: shot.dataset.full, title: shot.title };
+      });
+      await ip.locator(ui('.panel-body > .images .shot')).click();
+      let shown = await imageBoxes();
+      assert.equal(shown.full, 'true');
+      assert.equal(shown.title, 'Show the images in a row');
+      assert.ok(shown.width >= shown.body - 26, `full width ${shown.width} of ${shown.body}`);
+      await ip.locator(ui('.panel-body > .images .shot')).click();
+      shown = await imageBoxes();
+      assert.equal(shown.full, 'false');
+      assert.equal(shown.title, 'Show image 1 at full width');
+      assert.ok(shown.width < shown.body - 40, 'a second click goes back to the row');
+      await waitFor(ip, () => {
+        const button = document.querySelector('on-spot').shadowRoot.querySelector('.reply-form button.add-image');
+        return button && !button.disabled;
+      });
+      await pickImage('.reply-form button.add-image', replyPng);
+      await waitFor(ip, () => {
+        const thumb = document.querySelector('on-spot').shadowRoot.querySelector('.reply-form .thumb');
+        return thumb?.getAttribute('aria-busy') === 'false' && thumb.querySelector('canvas')?.width > 0;
+      });
+      await ip.locator(ui('button[title="Send your reply"]')).click();
+      await waitFor(ip, () => document.querySelector('on-spot').shadowRoot.querySelector('.reply .images canvas')?.width === 40);
+      const replyCall = await ip.evaluate(() => __fake.calls.filter(call => call.method === 'POST' && call.path === '/api/pins/1/replies').at(-1));
+      assert.equal(replyCall.body.body, 'See the attached image.');
+      assert.equal(replyCall.body.images.length, 1);
+      assert.match(replyCall.body.images[0], imageIdRe);
+      assert.notEqual(replyCall.body.images[0], draft.images[0]);
+      assert.deepEqual(await ip.evaluate(() => {
+        const canvas = document.querySelector('on-spot').shadowRoot.querySelector('.reply .images canvas');
+        return [...canvas.getContext('2d').getImageData(20, 15, 1, 1).data];
+      }), [200, 160, 20, 255], 'the reply image is drawn');
+      assert.deepEqual(await pinPixel(), [20, 80, 200, 255], 'the pin image stays');
+      assert.equal(await ip.locator(ui('img')).count(), 0, 'no image element');
+      await screenshot(ip, name, 'images');
+      await clean(ip, imagesPage.issues); await ip.close();
+      pass('images: paste or pick, thumbnail, remove, submit sends ids, an untrusted paste adds nothing, the card shows the pin image and a reply image');
+
       // Go back (0.6.0): the version choice in the card of a closed pin, and the labels of a go back.
       const backPage = await freshPage(context, '/back'); activePage = backPage.page;
       const gp = backPage.page;

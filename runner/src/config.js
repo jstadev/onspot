@@ -1,5 +1,5 @@
-// The runner's settings, from the environment (docs/protocol.md, Auto-fix runner, items 2, 4, 5 and
-// 12 to 14). A bad value throws at start: a limit or a switch that is misread is worse than a stop.
+// The runner's settings, from the environment (docs/protocol.md, Auto-fix runner, items 2, 4, 5,
+// 12 to 14 and 17). A bad value throws at start: a limit or a switch that is misread is worse than a stop.
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -34,5 +34,7 @@ export function readConfig(env = process.env) {
     cwd: folder("PINS_RUNNER_CWD", homedir()),
     // One folder per project, each with project.json, MEMORY.md and state.md (runner/src/projects.js).
     projectsDir: folder("PINS_PROJECTS_DIR", join(homedir(), ".claude", "memory-store", "projects")),
+    // Images of a pin, for the session to open. Live this is /var/lib/onspot-runner/images.
+    imagesDir: folder("PINS_RUNNER_IMAGES_DIR", "/var/lib/onspot-runner/images"),
   };
 }

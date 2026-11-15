@@ -2,10 +2,11 @@ import { ext, MSG, PORT_NAME } from "./shared/protocol.js";
 import { createAPI } from "./bg/api.js";
 import { createLive } from "./bg/live.js";
 import { trustedSender } from "./bg/request.js";
-import { createShot } from "./bg/shot.js";
+import { createImage, createShot } from "./bg/shot.js";
+import { createUpload } from "./bg/upload.js";
 
 const live = createLive();
-const handlers = { [MSG.API]: createAPI({ live }), [MSG.SHOT]: createShot({ live }) };
+const handlers = { [MSG.API]: createAPI({ live }), [MSG.SHOT]: createShot({ live }), [MSG.UPLOAD]: createUpload({ live }), [MSG.IMAGE]: createImage({ live }) };
 const trusted = (sender) => trustedSender(sender, ext.runtime.id);
 
 // Register synchronously so MV3 can dispatch the event that starts the worker.

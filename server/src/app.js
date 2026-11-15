@@ -4,7 +4,7 @@ import { allowMethod, HttpError, readBody, sendJson, tokenBucket } from "./http.
 import { SHOT_MAX, SHOT_TYPES } from "./shots.js";
 import { createStatic, decodePath } from "./static.js";
 
-// PUT exists only on the shot route.
+// PUT exists only on the shot route. A shot and an image for a pin arrive as raw bytes.
 const WRITES = new Set(["POST", "PATCH", "DELETE", "PUT"]);
 const HOST_RE = /^[a-z0-9.-]{1,253}(:[0-9]{1,5})?$/i;
 const mediaType = (req) => req.headers["content-type"]?.split(";", 1)[0].trim().toLowerCase();
@@ -52,11 +52,12 @@ export function createApp({ store, version, extension = null, queueUrl = "https:
     if (WRITES.has(req.method)) {
       const retry = takeToken();
       if (retry) return limited(retry);
-      if (route?.name === "shot") {
-        // Raw image bytes from a local agent. Caddy adds X-Forwarded-For, so a browser never gets here.
-        if (req.headers["x-forwarded-for"] !== undefined) throw new HttpError(403, "shot upload is local only");
+      if (route?.name === "shot" || route?.name === "images") {
+        // A shot comes from a local agent. Caddy adds X-Forwarded-For, so a browser never gets here.
+        // An image for a pin comes from him through Caddy, or from an agent.
+        if (route.name === "shot" && req.headers["x-forwarded-for"] !== undefined) throw new HttpError(403, "shot upload is local only");
         actor = getActor(req);
-        if (actor.kind !== "agent") throw new HttpError(403, "only an agent can upload a shot");
+        if (route.name === "shot" && actor.kind !== "agent") throw new HttpError(403, "only an agent can upload a shot");
         const type = mediaType(req);
         if (!SHOT_TYPES.includes(type)) throw new HttpError(415, `content type must be ${SHOT_TYPES.join(", ")}`);
         body = { type, bytes: await readBody(req, SHOT_MAX) };

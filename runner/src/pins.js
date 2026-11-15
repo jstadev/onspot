@@ -28,6 +28,27 @@ export function createPins({ fetch, clock, port }) {
     } finally { clock.clearTimeout(timeout); }
   }
 
+  /** GET the raw body, at most maxBytes, then stops reading. A status that is not 2xx throws.
+   *  The caller's signal aborts the read; the request also ends after API_MS. */
+  async function bytes(path, { signal, maxBytes = 2 * 1024 * 1024 } = {}) {
+    const controller = new AbortController();
+    const timeout = clock.setTimeout(() => controller.abort(), API_MS);
+    const onAbort = () => controller.abort();
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const response = await fetch(`${base}${path}`, { method: "GET", redirect: "error", signal: controller.signal });
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw Object.assign(new Error(`Pins HTTP ${response.status}`), { status: response.status });
+      }
+      return await readMax(response, maxBytes);
+    } finally {
+      clock.clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
   /** Reads the pins of a status page by page (500, newest first) and hands each page over, so one
    *  page is in memory at a time. */
   async function pages(status, onPage) {
@@ -43,5 +64,26 @@ export function createPins({ fetch, clock, port }) {
     }
   }
 
-  return { base, call, pages };
+  return { base, call, pages, bytes };
+}
+
+// Keeps the first max bytes and cancels the rest, so a long body cannot grow past the limit.
+async function readMax(response, max) {
+  const reader = response.body?.getReader();
+  if (!reader) return Buffer.alloc(0);
+  const chunks = [];
+  let total = 0;
+  try {
+    while (total < max) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      const take = Math.min(value.byteLength, max - total);
+      chunks.push(Buffer.from(value.subarray(0, take)));
+      total += take;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return total ? Buffer.concat(chunks, total) : Buffer.alloc(0);
 }

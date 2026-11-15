@@ -1,4 +1,5 @@
 // Unsent pins: the list of this host (on every page of it), the tray, and "Submit all".
+import { keepImages } from '../shared/image.js';
 import { BATCH_MAX, DRAFT_MAX, draftsKey, HOST, SUBMIT_KEYS, TAB } from './env.js';
 import { plural } from './format.js';
 import { announce, button, el } from './dom.js';
@@ -41,8 +42,11 @@ export const saveDrafts = () => store({ [draftsKey]: { tab: TAB, items: drafts.i
 export function validBody(body) {
   try {
     const url = new URL(body.url);
-    return url.protocol === 'https:' && url.host === HOST && typeof body.note === 'string' && Boolean(body.note.trim())
+    const ok = url.protocol === 'https:' && url.host === HOST && typeof body.note === 'string' && Boolean(body.note.trim())
       && Array.isArray(body.targets) && body.targets.length > 0 && body.targets.every(target => typeof target?.selector === 'string' && typeof target.label === 'string');
+    // Bad image ids are dropped here. At most six remain. The text draft per page keeps none.
+    if (ok) keepImages(body);
+    return ok;
   } catch { return false; }
 }
 function cleanDrafts(value) {

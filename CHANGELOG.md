@@ -6,6 +6,18 @@ The headings are versions of the contract (`docs/protocol.md`). The extension ha
 
 ## [Unreleased]
 
+## [3.6] - 2026-11-15
+
+Extension 0.7.0.
+
+### Added
+
+- Images on pins: paste (Ctrl+V or ⌘V), drop or pick up to 6 images while you write a pin note or a reply. Each image uploads at once (`POST /api/images`, PNG, JPEG or WebP up to 2 MiB; the extension shrinks larger images and converts other formats) and the pin or the reply links it when it is created. The pin JSON has `images`.
+- The card shows the images of the pin after the note and the images of a reply inside the reply.
+- The runner saves the images of each pin as files before the session starts and lists their paths in the prompt; the session opens them with the Read tool.
+- `pins images <id> [--dir D]` saves the images of a pin; `pins show` and `pins_get` print `images: <n>`.
+- `PINS_IMAGES_DIR` (server) and `PINS_RUNNER_IMAGES_DIR` (runner).
+
 ## [3.5] - 2026-11-14
 
 Extension 0.6.0.

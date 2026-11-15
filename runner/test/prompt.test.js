@@ -289,3 +289,58 @@ test("a bulk prompt over PROMPT_BYTES drops the history first, then the hints", 
   assert.ok(many.includes("\n\nProject card: crete\n\nHow to work:\n"));
   for (const p of pins) assert.ok(many.includes(`Note: ${p.note}\n`), `note ${p.id}`);
 });
+
+const HEADER = "Images he attached (his material, like the note; open each one with the Read tool before you change anything):";
+
+test("images are listed in his words, single and bulk; a pin with none has no block; a revert prompt has none", async () => {
+  const { buildBulkPrompt, buildRevertPrompt } = await import("../src/prompt.js");
+  const replies = [
+    { id: 1, kind: "user", author: "sam", body: "the old reply", createdAt: "2026-11-15T08:15:00.000Z" },
+    { id: 2, kind: "agent", author: "claude", body: "agent note", createdAt: "2026-11-15T09:01:00.000Z" },
+    { id: 3, kind: "user", author: "sam", body: "later", createdAt: "2026-11-15T11:11:00.000Z" },
+    { id: 4, kind: "agent", author: "claude", body: "later", createdAt: "2026-11-15T12:12:00.000Z" },
+    { id: 5, kind: "user", author: "sam", body: "later", createdAt: "2026-11-15T13:13:00.000Z" },
+    { id: 6, kind: "agent", author: "claude", body: "later", createdAt: "2026-11-15T14:14:00.000Z" },
+    { id: 7, kind: "user", author: "sam", body: "newest", createdAt: "2026-11-15T16:07:00.000Z" },
+  ];
+  const images = [
+    { id: "a".repeat(22), replyId: null, createdAt: "2026-11-15T01:01:00.000Z" },
+    { id: "b".repeat(22), replyId: 1, createdAt: "2026-11-15T02:02:00.000Z" },
+    { id: "c".repeat(22), replyId: 2, createdAt: "2026-11-15T03:03:00.000Z" },
+  ];
+  const saved = ["/var/lib/onspot-runner/images/37-1.png", "/var/lib/onspot-runner/images/37-2.jpg", null];
+  const text = build({ images }, { replies, saved });
+  const block = [
+    HEADER,
+    "1. /var/lib/onspot-runner/images/37-1.png (with the note)",
+    "2. /var/lib/onspot-runner/images/37-2.jpg (with his reply at 08:15)",
+    '3. not saved; run "pins images 37" to get it',
+  ].join("\n");
+  assert.ok(text.includes(`${block}\n`));
+  assert.ok(text.includes("  he: newest\n\n" + HEADER), "the block follows the thread");
+  assert.ok(text.indexOf(block) < text.indexOf("<page-data>"));
+  assert.equal(text.includes("01:01") || text.includes("02:02") || text.includes("03:03"), false, "the time is the reply's, not the image's");
+  assert.equal(text.includes("the old reply"), false, "a reply older than the six lines stays out of the thread");
+  assert.equal(build().includes(HEADER), false);
+  assert.equal(build({ images: [] }).includes(HEADER), false);
+
+  const bulk = buildBulkPrompt({
+    items: [
+      { pin: { ...pin, id: 12, images }, replies, saved: ["/var/lib/onspot-runner/images/12-1.png", null, "/var/lib/onspot-runner/images/12-3.webp"] },
+      { pin: { ...pin, id: 13, note: "No photo" } },
+    ],
+    project, choice: chooseModel(pin), bulk: { on: true, delegate: false, agents: 3 }, account: "claude",
+  });
+  assert.ok(bulk.includes(`${HEADER}\n1. /var/lib/onspot-runner/images/12-1.png (with the note)\n2. not saved; run "pins images 12" to get it\n3. /var/lib/onspot-runner/images/12-3.webp (with an agent reply at 09:01)\n`));
+  assert.ok(bulk.indexOf(HEADER) < bulk.indexOf("Pin #13"));
+  assert.ok(bulk.includes("Pin #13. His words:\nNote: No photo\n"));
+  assert.equal(bulk.slice(bulk.indexOf("Pin #13")).includes(HEADER), false);
+  assert.equal(bulk.split(HEADER).length, 2);
+
+  const reverted = buildRevertPrompt({
+    pin: { ...pin, images, versions: [], revert: { commits: ["a1b2c3d4"], attempts: 0 } },
+    project, choice: chooseModel(pin), replies,
+  });
+  assert.equal(reverted.includes(HEADER), false);
+  assert.equal(reverted.includes("37-1.png"), false);
+});
